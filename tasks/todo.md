@@ -5,7 +5,6 @@
 - [ ] execution/clob.py — CLOB limit order wrapper (Franjo, after sizing)
 
 ## Blocked
-- [ ] pipeline/orchestrator.py — needs scorer + sizing + clob
 - [ ] pipeline/scheduler.py — needs orchestrator
 - [ ] core/calibration.py — needs 100+ signals
 - [ ] dashboard/app.py — needs execution stable
@@ -22,3 +21,4 @@
 - [x] core/fetcher.py (35 tests green)
 - [x] core/scorer.py — Claude API scoring + edge computation (15 tests green)
 - [x] core/news.py — Perplexity + RSS news context aggregator (10 tests green)
+- [x] pipeline/orchestrator.py — paper trading loop, fetcher→news→scorer (8 tests green)
