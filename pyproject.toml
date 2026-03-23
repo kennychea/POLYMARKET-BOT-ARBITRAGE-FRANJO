@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "polymarket-agent"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "py-clob-client",
+    "anthropic>=0.25.0",
+    "requests>=2.31.0",
+    "python-dotenv>=1.0.0",
+    "apscheduler>=3.10.0",
+    "streamlit>=1.32.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "black>=24.0.0",
+    "mypy>=1.9.0",
+    "ruff>=0.3.0",
+    "pytest>=8.0.0",
+    "pytest-cov>=4.1.0",
+    "types-requests",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["core*", "execution*", "infra*", "pipeline*", "dashboard*"]
+
+[tool.black]
+line-length = 100
+target-version = ["py311"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+select = ["E", "F", "I", "N", "W", "UP"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v --tb=short"
