@@ -40,6 +40,30 @@ class Position:
 
 
 @dataclass
+class ScoringResult:
+    """Output of Claude API probability assessment."""
+
+    probability: float          # 0.0–1.0
+    confidence: int             # 0–10
+    reasoning: str
+    key_factors: list[str]
+    bear_case: str
+    bull_case: str
+    data_quality: str           # "high" | "medium" | "low"
+
+
+@dataclass
+class EdgeResult:
+    """Computed edge between agent probability and market price."""
+
+    best_side: Literal["YES", "NO"]
+    edge_yes: float
+    edge_no: float
+    edge_net: float             # best edge after fees
+    tradeable: bool
+
+
+@dataclass
 class CalibrationBucket:
     """Calibration stats for one probability bucket."""
 

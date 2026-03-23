@@ -1,7 +1,6 @@
 # TODO — Polymarket Agent
 
 ## In Progress
-- [ ] core/scorer.py — Claude API scoring engine (Edouard)
 - [ ] core/news.py — Perplexity + RSS context (Edouard, after scorer)
 - [ ] execution/sizing.py — Kelly fractional + circuit breaker (Franjo)
 - [ ] execution/clob.py — CLOB limit order wrapper (Franjo, after sizing)
@@ -22,3 +21,4 @@
 - [x] infra/types.py
 - [x] infra/telegram.py
 - [x] core/fetcher.py (35 tests green)
+- [x] core/scorer.py — Claude API scoring + edge computation (15 tests green)
