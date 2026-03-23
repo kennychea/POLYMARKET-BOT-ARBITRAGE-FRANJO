@@ -64,6 +64,18 @@ class EdgeResult:
 
 
 @dataclass
+class OrderResult:
+    """Result of a CLOB order attempt."""
+
+    status: Literal["placed", "skipped", "error"]
+    order_id: Optional[str]
+    price: Optional[float]
+    size_shares: Optional[float]
+    cost_usdc: Optional[float]
+    reason: Optional[str]
+
+
+@dataclass
 class CalibrationBucket:
     """Calibration stats for one probability bucket."""
 
