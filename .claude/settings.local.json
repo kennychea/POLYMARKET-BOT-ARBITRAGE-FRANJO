@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(mkdir -p \"c:/Users/kenny/Desktop/BOT-POLYVALENT-AGENT/.claude/agents\")",
+      "Bash(mkdir -p \"c:/Users/kenny/Desktop/BOT-POLYVALENT-AGENT/.claude/skills\")"
+    ]
+  }
+}

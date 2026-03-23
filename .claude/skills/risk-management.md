@@ -4,7 +4,7 @@
 - Full Kelly: (b*p - q) / b where b = market odds, p = prob_win, q = 1-p
 - ALWAYS use fraction = 0.25 (quarter Kelly) — never full Kelly
 - Cap: max 8% of bankroll per position
-- Min trade: $3 USDC (below this, gas eats the profit)
+- Min trade: $5 USDC (below this, gas eats the profit)
 
 ## Portfolio constraints
 - Max 5 simultaneous open positions

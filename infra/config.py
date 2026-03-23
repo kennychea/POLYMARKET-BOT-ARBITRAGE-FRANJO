@@ -35,7 +35,7 @@ KELLY_FRACTION: float = 0.25
 MAX_POSITION_PCT: float = 0.08          # 8% of bankroll per trade
 MAX_SIMULTANEOUS_POSITIONS: int = 5
 CYCLE_INTERVAL_SECONDS: int = 900       # 15 min
-MIN_TRADE_SIZE: float = 3.0             # USDC (covers gas + fees)
+MIN_TRADE_SIZE: float = 5.0             # USDC minimum
 POLYMARKET_FEE: float = 0.02            # 2% on gains
 
 # ── Market filters ────────────────────────────────────────────────────────────
