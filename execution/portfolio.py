@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import requests
@@ -153,7 +153,7 @@ def close_resolved_positions(
                 status=status,
                 exit_price=exit_price,
                 pnl=pnl,
-                resolution_date=datetime.now(timezone.utc).isoformat(),
+                resolution_date=datetime.now(UTC).isoformat(),
             )
         except Exception as exc:
             logger.error("close_position_db_error", extra={

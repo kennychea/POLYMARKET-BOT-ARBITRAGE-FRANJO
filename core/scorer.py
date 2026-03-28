@@ -7,7 +7,8 @@ from __future__ import annotations
 import json
 import logging
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+from typing import Literal
 
 import anthropic
 
@@ -156,7 +157,7 @@ def compute_edge(score: ScoringResult, market: MarketData) -> EdgeResult:
     """
     edge_yes = score.probability - market.yes_price - cfg.POLYMARKET_FEE
     edge_no = (1.0 - score.probability) - market.no_price - cfg.POLYMARKET_FEE
-    best_side: str = "YES" if edge_yes > edge_no else "NO"
+    best_side: Literal["YES", "NO"] = "YES" if edge_yes > edge_no else "NO"
     edge_net = max(edge_yes, edge_no)
     tradeable = edge_net > cfg.MIN_EDGE_NET and score.confidence >= cfg.MIN_CONFIDENCE
 
@@ -186,7 +187,7 @@ def build_trading_signal(
         confidence=score.confidence,
         tradeable=edge.tradeable,
         news_context=news_context,
-        timestamp=datetime.now(timezone.utc),
+        timestamp=datetime.now(UTC),
     )
 
 

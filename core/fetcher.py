@@ -7,7 +7,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import requests
@@ -47,8 +47,8 @@ def _fetch_page(offset: int) -> list[dict[str, Any]]:
         params={
             "active": "true",
             "closed": "false",
-            "limit": _PAGE_SIZE,
-            "offset": offset,
+            "limit": str(_PAGE_SIZE),
+            "offset": str(offset),
         },
         timeout=_REQUEST_TIMEOUT,
     )
@@ -114,7 +114,7 @@ def _parse_end_date(raw: dict[str, Any]) -> datetime | None:
         return None
     try:
         return datetime.fromisoformat(str(end_str).replace("Z", "+00:00")).astimezone(
-            timezone.utc
+            UTC
         )
     except (ValueError, AttributeError):
         return None
@@ -200,7 +200,7 @@ def parse_market(raw: dict[str, Any]) -> MarketData | None:
     if end_date is None:
         return None
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     days_to_resolution = (end_date - now).total_seconds() / 86_400
 
     volume = _parse_float_field(raw, "volume", "volumeNum")

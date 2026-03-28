@@ -5,9 +5,9 @@ import logging
 from typing import Any
 
 from py_clob_client.client import ClobClient
-from py_clob_client.clob_types import OrderArgs, OrderType
+from py_clob_client.clob_types import OrderArgs
 
-from infra.config import POLYMARKET_API_KEY, POLYMARKET_PRIVATE_KEY
+from infra.config import POLYMARKET_PRIVATE_KEY
 from infra.types import OrderResult
 
 logger = logging.getLogger(__name__)

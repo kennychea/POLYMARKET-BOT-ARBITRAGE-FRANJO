@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Literal, Optional
+from typing import Literal
 
 
 @dataclass
@@ -36,7 +36,7 @@ class Position:
     size_shares: float
     order_id: str
     status: Literal["open", "won", "lost", "void", "cancelled"]
-    pnl: Optional[float]
+    pnl: float | None
 
 
 @dataclass
@@ -68,11 +68,11 @@ class OrderResult:
     """Result of a CLOB order attempt."""
 
     status: Literal["placed", "skipped", "error"]
-    order_id: Optional[str]
-    price: Optional[float]
-    size_shares: Optional[float]
-    cost_usdc: Optional[float]
-    reason: Optional[str]
+    order_id: str | None
+    price: float | None
+    size_shares: float | None
+    cost_usdc: float | None
+    reason: str | None
 
 
 @dataclass

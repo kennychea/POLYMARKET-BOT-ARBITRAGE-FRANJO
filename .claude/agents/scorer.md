@@ -17,6 +17,7 @@ You are the **Scoring Engine Specialist** for a Polymarket trading bot.
 
 ## Before coding, read these skills:
 - `.claude/skills/scoring-calibration.md`
+- `.claude/skills/claude-api-patterns.md`
 - `.claude/skills/project-conventions.md`
 - `.claude/skills/testing-patterns.md` (when writing tests)
 

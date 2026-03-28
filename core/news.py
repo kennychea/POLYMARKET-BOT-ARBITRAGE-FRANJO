@@ -8,8 +8,9 @@ from __future__ import annotations
 import logging
 import urllib.parse
 import xml.etree.ElementTree as ET
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from datetime import datetime
+from typing import Any
 
 import requests
 
@@ -134,7 +135,7 @@ def build_news_context(question: str) -> str:
         future_perplexity = executor.submit(fetch_perplexity_context, question)
         future_rss = executor.submit(fetch_rss_headlines, question)
 
-        futures = {
+        futures: dict[Future[Any], str] = {
             future_perplexity: "perplexity",
             future_rss: "rss",
         }

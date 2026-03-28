@@ -4,8 +4,10 @@ from __future__ import annotations
 import logging
 import os
 import sqlite3
+from collections.abc import Generator
 from contextlib import contextmanager
-from typing import Any, Generator
+from datetime import UTC
+from typing import Any
 
 import infra.config as cfg
 from infra.types import CalibrationBucket, TradingSignal
@@ -102,16 +104,17 @@ def log_trade(signal: TradingSignal, size_usdc: float, entry_price: float) -> in
 
 def log_scan(markets_scanned: int, opportunities_found: int, trades_placed: int) -> None:
     """Record one market-scan cycle result."""
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     with _conn() as con:
         con.execute(
             """
-            INSERT INTO market_scans (timestamp, markets_scanned, opportunities_found, trades_placed)
+            INSERT INTO market_scans
+                (timestamp, markets_scanned, opportunities_found, trades_placed)
             VALUES (?, ?, ?, ?)
             """,
             (
-                datetime.now(timezone.utc).isoformat(),
+                datetime.now(UTC).isoformat(),
                 markets_scanned,
                 opportunities_found,
                 trades_placed,

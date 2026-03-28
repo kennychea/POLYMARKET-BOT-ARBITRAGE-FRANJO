@@ -1,1 +1,46 @@
-{"autoMemoryEnabled": true}
+{
+  "autoMemoryEnabled": true,
+  "permissions": {
+    "allow": [
+      "Bash(pytest*)",
+      "Bash(python -m pytest*)",
+      "Bash(mypy*)",
+      "Bash(python -m mypy*)",
+      "Bash(ruff*)",
+      "Bash(python -m ruff*)",
+      "Bash(git status*)",
+      "Bash(git log*)",
+      "Bash(git diff*)",
+      "Bash(git branch*)",
+      "Bash(git checkout*)",
+      "Bash(git add*)",
+      "Bash(git commit*)",
+      "Bash(pip install*)",
+      "Bash(pip list*)",
+      "Bash(python -c*)",
+      "Bash(python -m pipeline.orchestrator --paper*)",
+      "Bash(python -m core.scorer*)",
+      "Bash(cat*)",
+      "Bash(ls*)",
+      "Bash(find*)",
+      "Bash(wc*)",
+      "Bash(head*)",
+      "Bash(tail*)",
+      "Bash(grep*)",
+      "Bash(mkdir*)",
+      "Bash(cd*)",
+      "Glob(*)",
+      "Grep(*)",
+      "Read(*)",
+      "Write(*)",
+      "Edit(*)"
+    ],
+    "deny": [
+      "Bash(rm -rf*)",
+      "Bash(git push --force*)",
+      "Bash(git reset --hard*)",
+      "Bash(git clean*)",
+      "Bash(python -m pipeline.orchestrator --live*)"
+    ]
+  }
+}

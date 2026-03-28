@@ -2,7 +2,7 @@
 name: spec
 description: Interview me about a feature, then write a complete spec before coding
 argument-hint: "<feature description>"
-allowed-tools: [Read, Bash, Glob, Grep, AskUserQuestion, Write]
+allowed-tools: [Read, Bash, Glob, Grep, Write]
 ---
 
 You are designing a feature for a Polymarket trading bot. The feature is: $ARGUMENTS
@@ -10,13 +10,13 @@ You are designing a feature for a Polymarket trading bot. The feature is: $ARGUM
 Before writing ANY code:
 
 1. Read CLAUDE.md and relevant skills in .claude/skills/
-2. Interview me about this feature. Ask about:
+2. Interview me about this feature. Ask me ONE question at a time about:
    - Technical implementation details
    - Edge cases and error handling
    - How it integrates with existing modules (check infra/types.py contracts)
    - Tradeoffs and alternatives
    - Testing strategy
-   Use the AskUserQuestion tool for each question. Keep interviewing until all ambiguity is resolved.
+   Keep interviewing until all ambiguity is resolved.
 
 3. Write a complete spec to `.specs/<feature-name>.md` with:
    - Overview (what + why)

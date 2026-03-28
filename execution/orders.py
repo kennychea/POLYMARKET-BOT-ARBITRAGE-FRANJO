@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 import sqlite3
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from py_clob_client.client import ClobClient
@@ -102,7 +102,7 @@ def cancel_stale_orders(
         logger.info("stale_orders_cleanup", extra={"cancelled": 0, "checked": 0})
         return 0
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     cancelled = 0
 
     for order in orders:
@@ -177,12 +177,12 @@ def _is_stale(order: dict[str, Any], now: datetime, max_age_minutes: int) -> boo
 
     try:
         if isinstance(ts_raw, (int, float)):
-            created = datetime.fromtimestamp(ts_raw, tz=timezone.utc)
+            created = datetime.fromtimestamp(ts_raw, tz=UTC)
         else:
             ts_str = str(ts_raw).replace("Z", "+00:00")
             created = datetime.fromisoformat(ts_str)
             if created.tzinfo is None:
-                created = created.replace(tzinfo=timezone.utc)
+                created = created.replace(tzinfo=UTC)
         age_minutes = (now - created).total_seconds() / 60
         return age_minutes > max_age_minutes
     except (ValueError, TypeError):

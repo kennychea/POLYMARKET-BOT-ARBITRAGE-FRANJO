@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import infra.config as cfg
@@ -31,7 +31,7 @@ def run_single_cycle(paper: bool = True) -> dict[str, Any]:
     Returns a summary dict with scanned/opportunity/signal counts.
     """
     cycle_start = time.monotonic()
-    timestamp = datetime.now(timezone.utc)
+    timestamp = datetime.now(UTC)
     logger.info("cycle_start", extra={"paper": paper, "timestamp": timestamp.isoformat()})
 
     # Step 1: Fetch tradeable markets
@@ -93,7 +93,10 @@ def run_single_cycle(paper: bool = True) -> dict[str, Any]:
     for signal in selected:
         if paper:
             db.log_trade(signal, size_usdc=0.0, entry_price=signal.market_probability)
-            alert_msg = f"[PAPER] {tg.format_trade_alert(signal, size_usdc=0.0, entry_price=signal.market_probability)}"
+            formatted = tg.format_trade_alert(
+                signal, size_usdc=0.0, entry_price=signal.market_probability,
+            )
+            alert_msg = f"[PAPER] {formatted}"
             tg.send_alert(alert_msg)
             signals_sent += 1
         else:

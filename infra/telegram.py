@@ -63,5 +63,6 @@ def format_scan_alert(
     """Format a cycle-end scan summary."""
     return (
         f"🔍 <b>Scan complete</b>\n"
-        f"Markets: {markets_scanned} | Opportunities: {opportunities_found} | Trades: {trades_placed}"
+        f"Markets: {markets_scanned} | Opportunities: {opportunities_found}"
+        f" | Trades: {trades_placed}"
     )
