@@ -2,6 +2,7 @@
 name: executor
 description: Use this agent for order execution, position sizing, Kelly criterion, risk management, circuit breaker, CLOB interaction, portfolio, or slippage control. Handles execution/ and related tests.
 model: sonnet
+memory: project
 tools:
   - Read
   - Write

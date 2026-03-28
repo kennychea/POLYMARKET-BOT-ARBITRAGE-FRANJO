@@ -43,12 +43,22 @@ Edge informationnel > edge vitesse. On joue les niches, pas les marchés saturé
 - Aller dans les logs, trouver la cause racine, résoudre
 - Pas besoin d'être guidé étape par étape
 
+### 7. Gestion du contexte
+- Le contexte sera automatiquement compacté quand il approche de la limite
+- Ne JAMAIS arrêter une tâche prématurément à cause du budget de tokens
+- Avant compaction : sauvegarder l'état dans tasks/todo.md
+- Utiliser des sous-agents pour les explorations longues (garder le contexte principal propre)
+- Pour les questions rapides sans rapport : utiliser un sous-agent pour ne pas polluer le contexte principal
+
 ## PRINCIPES FONDAMENTAUX
 
 - Simplicité d'abord — toucher un minimum de code
 - Pas de paresse — causes racines uniquement, pas de fixes temporaires
 - Ne jamais supposer — vérifier chemins, APIs, variables avant utilisation
 - Demander une seule fois — une question en amont si nécessaire, ne jamais interrompre en cours de tâche
+- Être explicite — Claude 4 suit les instructions littéralement. Dire exactement ce qu'on veut, pas ce qu'on ne veut pas
+- Expliquer le pourquoi — « On utilise quarter Kelly PARCE QUE full Kelly est trop agressif pour un petit bankroll » aide Claude à généraliser
+- Pas de raccourcis sur les exemples — les exemples dans les skills sont suivis à la lettre, vérifier qu'ils reflètent le comportement voulu
 
 ## GESTION DES TÂCHES
 
@@ -271,3 +281,13 @@ Commit format : `feat(core):`, `feat(exec):`, `feat(infra):`, `fix():`, `test():
 4. **Live petit** — $50-100 USDC, semi-auto, 30 trades
 5. **Full-auto** — edge > 7% + confidence >= 7
 6. **Scale** — capital progressif si 2 mois consécutifs profitables
+
+## Compact Instructions
+
+When compacting context, ALWAYS preserve:
+- The full list of modified files in this session
+- All test commands and their pass/fail results
+- Current task from tasks/todo.md
+- Any error messages or stack traces being debugged
+- The contract interfaces (TradingSignal, Position)
+- Current thresholds (MIN_EDGE_NET=0.05, MIN_CONFIDENCE=6, MIN_TRADE_SIZE=5.0)

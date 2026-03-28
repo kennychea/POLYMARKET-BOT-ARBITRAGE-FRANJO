@@ -2,6 +2,7 @@
 name: data-pipeline
 description: Use this agent for market data fetching, Gamma API, Perplexity news, RSS headlines, orderbook, market filtering, or data pipeline issues. Handles core/fetcher.py, core/news.py, and related tests.
 model: sonnet
+memory: project
 tools:
   - Read
   - Write

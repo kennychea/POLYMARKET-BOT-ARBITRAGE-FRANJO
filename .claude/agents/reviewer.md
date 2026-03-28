@@ -2,6 +2,7 @@
 name: reviewer
 description: Use this agent to review code, audit modules, check type safety, verify test coverage, or review PRs. Read-only — does not modify code.
 model: sonnet
+memory: project
 tools:
   - Read
   - Glob

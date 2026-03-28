@@ -2,6 +2,8 @@
 name: scorer
 description: Use this agent for market probability scoring, Claude API integration, edge computation, calibration, or the scoring pipeline. Handles core/scorer.py, core/calibration.py, tests/test_scorer.py.
 model: opus
+memory: project
+isolation: worktree
 tools:
   - Read
   - Write

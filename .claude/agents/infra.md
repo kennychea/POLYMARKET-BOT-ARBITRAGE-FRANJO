@@ -2,6 +2,7 @@
 name: infra
 description: Use this agent for configuration, database schema, Telegram alerts, shared types/dataclasses, env vars, or project infrastructure. Handles infra/ directory.
 model: sonnet
+memory: project
 tools:
   - Read
   - Write

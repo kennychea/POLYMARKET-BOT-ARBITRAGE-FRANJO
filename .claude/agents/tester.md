@@ -2,6 +2,7 @@
 name: tester
 description: Use this agent for writing tests, fixing failing tests, improving test coverage, creating fixtures, or debugging test issues. Handles tests/ directory.
 model: sonnet
+memory: project
 tools:
   - Read
   - Write
