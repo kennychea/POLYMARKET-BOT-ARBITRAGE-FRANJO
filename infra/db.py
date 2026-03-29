@@ -162,6 +162,25 @@ def get_open_positions() -> list[dict[str, Any]]:
     return [dict(row) for row in rows]
 
 
+def get_all_trades() -> list[dict[str, Any]]:
+    """Return all trades ordered by timestamp descending."""
+    with _conn() as con:
+        rows = con.execute(
+            "SELECT * FROM trades ORDER BY timestamp DESC"
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def get_scans(limit: int = 200) -> list[dict[str, Any]]:
+    """Return recent market scans ordered by timestamp descending."""
+    with _conn() as con:
+        rows = con.execute(
+            "SELECT * FROM market_scans ORDER BY timestamp DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
 def compute_calibration(last_n: int = 100) -> list[CalibrationBucket]:
     """Compute calibration error per probability bucket over the last N resolved trades.
 

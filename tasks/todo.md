@@ -1,15 +1,16 @@
 # TODO — Polymarket Agent
 
 ## In Progress
-- [ ] pipeline/scheduler.py — APScheduler, 15min cycle
+
+## Done (recent)
+- [x] pipeline/scheduler.py — APScheduler BackgroundScheduler, 15min cycle (10 tests green)
 
 ## Blocked
 - [ ] core/calibration.py — needs 100+ signals
-- [ ] dashboard/app.py — ready to start (execution stable)
 
 ## Missing tests
-- [ ] tests/test_db.py
-- [ ] tests/test_telegram.py
+- [x] tests/test_db.py (16 tests green)
+- [x] tests/test_telegram.py (7 tests green)
 
 ## Done
 - [x] infra/config.py
@@ -33,3 +34,6 @@
 - [x] Commands added: /test, /check, /status
 - [x] Agents: reviewer enhanced with checklist, dashboard agent created
 - [x] CI: .github/workflows/ci.yml (pytest + mypy + ruff)
+- [x] dashboard/app.jsx — React dashboard complet (5 tabs, mock data, dark theme)
+- [x] dashboard/api.py — FastAPI backend (4 endpoints, CORS, 9 tests green)
+- [x] dashboard/app.jsx — wired to API with fallback to mock data
