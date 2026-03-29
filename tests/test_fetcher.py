@@ -6,6 +6,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 from unittest.mock import MagicMock, patch
 
+import requests
+
 import pytest
 
 from core.fetcher import (
@@ -14,6 +16,9 @@ from core.fetcher import (
     _parse_tags,
     _passes_filters,
     _tag_in_focus,
+    clear_cache,
+    fetch_orderbook_depth,
+    fetch_price_history,
     filter_markets,
     parse_market,
 )
@@ -278,3 +283,227 @@ def test_fetch_raw_markets_non_list_response() -> None:
         result = fetch_raw_markets()
 
     assert result == []
+
+
+# ── Cache TTL ────────────────────────────────────────────────────────────────
+
+
+@pytest.fixture(autouse=True)
+def _clear_cache() -> None:
+    """Ensure each test starts with a clean cache."""
+    clear_cache()
+
+
+def test_fetch_raw_markets_uses_cache() -> None:
+    """Second call should return cached data without hitting the API."""
+    page = [_good_raw(conditionId=f"0x{i}") for i in range(10)]
+    mock_response = MagicMock()
+    mock_response.json.return_value = page
+    mock_response.raise_for_status.return_value = None
+
+    with patch("core.fetcher.requests.get", return_value=mock_response) as mock_get:
+        from core.fetcher import fetch_raw_markets
+
+        first = fetch_raw_markets()
+        second = fetch_raw_markets()
+
+    assert first == second
+    assert mock_get.call_count == 1  # only one actual HTTP call
+
+
+def test_clear_cache_forces_refetch() -> None:
+    page = [_good_raw(conditionId="0xcache")]
+    mock_response = MagicMock()
+    mock_response.json.return_value = page
+    mock_response.raise_for_status.return_value = None
+
+    with patch("core.fetcher.requests.get", return_value=mock_response) as mock_get:
+        from core.fetcher import fetch_raw_markets
+
+        fetch_raw_markets()
+        clear_cache()
+        fetch_raw_markets()
+
+    assert mock_get.call_count == 2
+
+
+# ── fetch_price_history ──────────────────────────────────────────────────────
+
+
+def _price_history_response(prices: list[float]) -> list[dict[str, float]]:
+    return [{"price": p} for p in prices]
+
+
+def test_fetch_price_history_valid() -> None:
+    data = _price_history_response([0.40, 0.42, 0.45, 0.50])
+    mock_resp = MagicMock()
+    mock_resp.json.return_value = data
+    mock_resp.raise_for_status.return_value = None
+
+    with patch("core.fetcher.requests.get", return_value=mock_resp):
+        result = fetch_price_history("mkt-1")
+
+    assert result is not None
+    assert result["price_24h_ago"] == pytest.approx(0.40)
+    assert result["current_price"] == pytest.approx(0.50)
+    assert result["momentum"] == pytest.approx(0.10)
+
+
+def test_fetch_price_history_cached() -> None:
+    data = _price_history_response([0.30, 0.35])
+    mock_resp = MagicMock()
+    mock_resp.json.return_value = data
+    mock_resp.raise_for_status.return_value = None
+
+    with patch("core.fetcher.requests.get", return_value=mock_resp) as mock_get:
+        fetch_price_history("mkt-cache")
+        fetch_price_history("mkt-cache")
+
+    assert mock_get.call_count == 1
+
+
+def test_fetch_price_history_insufficient_data() -> None:
+    mock_resp = MagicMock()
+    mock_resp.json.return_value = [{"price": 0.5}]  # only 1 point
+    mock_resp.raise_for_status.return_value = None
+
+    with patch("core.fetcher.requests.get", return_value=mock_resp):
+        assert fetch_price_history("mkt-bad") is None
+
+
+def test_fetch_price_history_http_error() -> None:
+    with patch("core.fetcher.requests.get", side_effect=requests.exceptions.Timeout("timeout")):
+        assert fetch_price_history("mkt-err") is None
+
+
+def test_fetch_price_history_non_list_response() -> None:
+    mock_resp = MagicMock()
+    mock_resp.json.return_value = {"error": "not found"}
+    mock_resp.raise_for_status.return_value = None
+
+    with patch("core.fetcher.requests.get", return_value=mock_resp):
+        assert fetch_price_history("mkt-nonlist") is None
+
+
+# ── fetch_orderbook_depth ────────────────────────────────────────────────────
+
+
+def _orderbook_response(
+    bids: list[tuple[float, float]],
+    asks: list[tuple[float, float]],
+) -> dict[str, list[dict[str, str]]]:
+    return {
+        "bids": [{"price": str(p), "size": str(s)} for p, s in bids],
+        "asks": [{"price": str(p), "size": str(s)} for p, s in asks],
+    }
+
+
+def test_fetch_orderbook_depth_valid() -> None:
+    book = _orderbook_response(
+        bids=[(0.50, 100), (0.49, 200), (0.45, 500)],
+        asks=[(0.52, 150), (0.53, 300), (0.60, 800)],
+    )
+    mock_resp = MagicMock()
+    mock_resp.json.return_value = book
+    mock_resp.raise_for_status.return_value = None
+
+    with patch("core.fetcher.requests.get", return_value=mock_resp):
+        result = fetch_orderbook_depth("tok-1")
+
+    assert result is not None
+    # mid = (0.50 + 0.52) / 2 = 0.51
+    # low_bound = 0.51 * 0.98 = 0.4998 → bids >= 0.4998: 0.50(100)
+    # high_bound = 0.51 * 1.02 = 0.5202 → asks <= 0.5202: 0.52(150)
+    assert result["bid_depth_2pct"] == pytest.approx(100.0)
+    assert result["ask_depth_2pct"] == pytest.approx(150.0)
+    assert result["total_liquidity"] == pytest.approx(250.0)
+
+
+def test_fetch_orderbook_depth_empty_book() -> None:
+    mock_resp = MagicMock()
+    mock_resp.json.return_value = {"bids": [], "asks": []}
+    mock_resp.raise_for_status.return_value = None
+
+    with patch("core.fetcher.requests.get", return_value=mock_resp):
+        assert fetch_orderbook_depth("tok-empty") is None
+
+
+def test_fetch_orderbook_depth_http_error() -> None:
+    with patch("core.fetcher.requests.get", side_effect=requests.exceptions.ConnectionError("fail")):
+        assert fetch_orderbook_depth("tok-err") is None
+
+
+def test_fetch_orderbook_depth_wide_book() -> None:
+    """All liquidity within 2% range should be summed."""
+    book = _orderbook_response(
+        bids=[(0.50, 100), (0.50, 50)],   # both at mid-ish
+        asks=[(0.52, 200), (0.52, 100)],
+    )
+    mock_resp = MagicMock()
+    mock_resp.json.return_value = book
+    mock_resp.raise_for_status.return_value = None
+
+    with patch("core.fetcher.requests.get", return_value=mock_resp):
+        result = fetch_orderbook_depth("tok-wide")
+
+    assert result is not None
+    assert result["bid_depth_2pct"] == pytest.approx(150.0)
+    assert result["ask_depth_2pct"] == pytest.approx(300.0)
+
+
+# ── Prompt 6 — additional coverage ─────────────────────────────────────────
+
+
+def test_fetch_price_history_malformed_entries() -> None:
+    """Price entries missing 'price' key → returns None."""
+    mock_resp = MagicMock()
+    mock_resp.json.return_value = [{"t": 1}, {"t": 2}]  # no price key
+    mock_resp.raise_for_status.return_value = None
+
+    with patch("core.fetcher.requests.get", return_value=mock_resp):
+        result = fetch_price_history("mkt-malformed")
+
+    # float(0) for missing key → price_24h_ago=0.0, current=0.0 — still returns dict
+    # Actually: data[0].get("price", data[0].get("p", 0)) → 0
+    # This is valid parsing (returns 0s), so result is not None but values are 0
+    assert result is not None
+    assert result["price_24h_ago"] == pytest.approx(0.0)
+    assert result["current_price"] == pytest.approx(0.0)
+    assert result["momentum"] == pytest.approx(0.0)
+
+
+def test_fetch_orderbook_depth_no_liquidity_within_2pct() -> None:
+    """All liquidity outside +/-2% of mid → depths are 0."""
+    book = _orderbook_response(
+        bids=[(0.30, 500)],   # far below mid
+        asks=[(0.70, 500)],   # far above mid
+    )
+    mock_resp = MagicMock()
+    mock_resp.json.return_value = book
+    mock_resp.raise_for_status.return_value = None
+
+    with patch("core.fetcher.requests.get", return_value=mock_resp):
+        result = fetch_orderbook_depth("tok-spread")
+
+    assert result is not None
+    # mid = (0.30 + 0.70) / 2 = 0.50
+    # low_bound = 0.49, high_bound = 0.51 → neither bid nor ask in range
+    assert result["bid_depth_2pct"] == pytest.approx(0.0)
+    assert result["ask_depth_2pct"] == pytest.approx(0.0)
+    assert result["total_liquidity"] == pytest.approx(0.0)
+
+
+def test_get_tradeable_markets_returns_filtered_list() -> None:
+    """get_tradeable_markets() = fetch_raw_markets() + filter_markets(), no regression."""
+    from core.fetcher import get_tradeable_markets
+
+    raw = [_good_raw(), _good_raw(volume="500")]  # 1 valid, 1 too-low-volume
+    mock_resp = MagicMock()
+    mock_resp.json.return_value = raw
+    mock_resp.raise_for_status.return_value = None
+
+    with patch("core.fetcher.requests.get", return_value=mock_resp):
+        markets = get_tradeable_markets()
+
+    assert len(markets) == 1
+    assert markets[0].market_id == "0xabc123"

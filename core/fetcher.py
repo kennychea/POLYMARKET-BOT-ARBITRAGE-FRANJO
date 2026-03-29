@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
@@ -17,9 +18,40 @@ import infra.config as cfg
 logger = logging.getLogger(__name__)
 
 _GAMMA_BASE = "https://gamma-api.polymarket.com"
+_CLOB_BASE = "https://clob.polymarket.com"
 _PAGE_SIZE = 100
 _MAX_PAGES = 3
 _REQUEST_TIMEOUT = 15
+
+# ── TTL cache ────────────────────────────────────────────────────────────────
+
+_cache: dict[str, tuple[float, Any]] = {}   # key → (expires_at, data)
+
+
+def _cache_get(key: str) -> Any | None:
+    """Return cached value if still valid, else None."""
+    entry = _cache.get(key)
+    if entry is None:
+        logger.debug("cache_miss", extra={"key": key})
+        return None
+    expires_at, data = entry
+    if time.monotonic() > expires_at:
+        del _cache[key]
+        logger.debug("cache_expired", extra={"key": key})
+        return None
+    logger.debug("cache_hit", extra={"key": key})
+    return data
+
+
+def _cache_set(key: str, data: Any, ttl: int) -> None:
+    """Store value with TTL (seconds)."""
+    _cache[key] = (time.monotonic() + ttl, data)
+
+
+def clear_cache() -> None:
+    """Clear all cached data. Useful for tests and manual resets."""
+    _cache.clear()
+    logger.info("cache_cleared")
 
 
 @dataclass
@@ -58,16 +90,131 @@ def _fetch_page(offset: int) -> list[dict[str, Any]]:
 
 
 def fetch_raw_markets() -> list[dict[str, Any]]:
-    """Fetch up to _MAX_PAGES pages of active markets from Gamma API."""
-    all_markets: list[dict[str, Any]] = []
-    for page in range(_MAX_PAGES):
-        page_data = _fetch_page(offset=page * _PAGE_SIZE)
-        all_markets.extend(page_data)
-        logger.debug("gamma_page_fetched", extra={"page": page, "count": len(page_data)})
-        if len(page_data) < _PAGE_SIZE:
-            break
-    logger.info("gamma_fetch_complete", extra={"total": len(all_markets)})
+    """Fetch up to _MAX_PAGES pages of active markets from Gamma API.
+
+    Results are cached for CACHE_TTL_MARKETS seconds.
+    """
+    cached = _cache_get("raw_markets")
+    if cached is not None:
+        return cached  # type: ignore[no-any-return]
+
+    try:
+        all_markets: list[dict[str, Any]] = []
+        for page in range(_MAX_PAGES):
+            page_data = _fetch_page(offset=page * _PAGE_SIZE)
+            all_markets.extend(page_data)
+            logger.debug("gamma_page_fetched", extra={"page": page, "count": len(page_data)})
+            if len(page_data) < _PAGE_SIZE:
+                break
+        logger.info("gamma_fetch_complete", extra={"total": len(all_markets)})
+    except (requests.RequestException, ValueError) as exc:
+        logger.warning("fetch_raw_markets_error", extra={"error": str(exc)})
+        return []
+
+    _cache_set("raw_markets", all_markets, cfg.CACHE_TTL_MARKETS)
     return all_markets
+
+
+def fetch_price_history(market_id: str) -> dict[str, float] | None:
+    """Fetch 24h price history for momentum calculation.
+
+    Returns {"price_24h_ago": float, "current_price": float, "momentum": float}
+    or None on error.  Results cached for CACHE_TTL_PRICES seconds.
+    """
+    cache_key = f"price_history:{market_id}"
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached  # type: ignore[no-any-return]
+
+    try:
+        response = requests.get(
+            f"{_GAMMA_BASE}/prices/history",
+            params={"market": market_id, "interval": "1h", "fidelity": "24"},
+            timeout=5,
+        )
+        response.raise_for_status()
+        data: Any = response.json()
+    except (requests.RequestException, ValueError) as exc:
+        logger.warning("price_history_fetch_failed", extra={"market_id": market_id, "error": str(exc)})
+        return None
+
+    if not isinstance(data, list) or len(data) < 2:
+        logger.warning("price_history_insufficient_data", extra={"market_id": market_id, "points": len(data) if isinstance(data, list) else 0})
+        return None
+
+    try:
+        price_24h_ago = float(data[0].get("price", data[0].get("p", 0)))
+        current_price = float(data[-1].get("price", data[-1].get("p", 0)))
+    except (ValueError, TypeError, AttributeError) as exc:
+        logger.warning("price_history_parse_failed", extra={"market_id": market_id, "error": str(exc)})
+        return None
+
+    result: dict[str, float] = {
+        "price_24h_ago": price_24h_ago,
+        "current_price": current_price,
+        "momentum": current_price - price_24h_ago,
+    }
+    _cache_set(cache_key, result, cfg.CACHE_TTL_PRICES)
+    logger.info("price_history_fetched", extra={"market_id": market_id, "momentum": result["momentum"]})
+    return result
+
+
+def fetch_orderbook_depth(token_id: str) -> dict[str, float] | None:
+    """Fetch orderbook and compute liquidity within +/-2% of mid price.
+
+    Returns {"bid_depth_2pct": float, "ask_depth_2pct": float, "total_liquidity": float}
+    or None on error.
+    """
+    try:
+        response = requests.get(
+            f"{_CLOB_BASE}/book",
+            params={"token_id": token_id},
+            timeout=5,
+        )
+        response.raise_for_status()
+        book: Any = response.json()
+    except (requests.RequestException, ValueError) as exc:
+        logger.warning("orderbook_fetch_failed", extra={"token_id": token_id, "error": str(exc)})
+        return None
+
+    bids: list[dict[str, Any]] = book.get("bids", [])
+    asks: list[dict[str, Any]] = book.get("asks", [])
+
+    if not bids or not asks:
+        logger.warning("orderbook_empty", extra={"token_id": token_id})
+        return None
+
+    try:
+        best_bid = float(bids[0].get("price", 0))
+        best_ask = float(asks[0].get("price", 0))
+    except (ValueError, TypeError):
+        return None
+
+    if best_bid <= 0 or best_ask <= 0:
+        return None
+
+    mid = (best_bid + best_ask) / 2.0
+    low_bound = mid * 0.98   # -2%
+    high_bound = mid * 1.02  # +2%
+
+    bid_depth = sum(
+        float(b.get("size", 0))
+        for b in bids
+        if float(b.get("price", 0)) >= low_bound
+    )
+    ask_depth = sum(
+        float(a.get("size", 0))
+        for a in asks
+        if float(a.get("price", 0)) <= high_bound
+    )
+
+    result: dict[str, float] = {
+        "bid_depth_2pct": bid_depth,
+        "ask_depth_2pct": ask_depth,
+        "total_liquidity": bid_depth + ask_depth,
+    }
+    logger.info("orderbook_depth_computed", extra={"token_id": token_id, **result})
+    return result
 
 
 # ── Parsing helpers ───────────────────────────────────────────────────────────

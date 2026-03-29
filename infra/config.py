@@ -37,6 +37,12 @@ MAX_SIMULTANEOUS_POSITIONS: int = 5
 CYCLE_INTERVAL_SECONDS: int = 900       # 15 min
 MIN_TRADE_SIZE: float = 5.0             # USDC minimum
 POLYMARKET_FEE: float = 0.02            # 2% on gains
+INITIAL_BANKROLL_USDC: float = 100.0    # manual update until wallet balance API
+ENABLE_SECOND_OPINION: bool = False     # scorer double-check (prompt 3)
+
+# ── Cache TTLs ───────────────────────────────────────────────────────────────
+CACHE_TTL_MARKETS: int = 300            # 5 min for fetch_raw_markets()
+CACHE_TTL_PRICES: int = 600             # 10 min for fetch_price_history()
 
 # ── Market filters ────────────────────────────────────────────────────────────
 MARKET_FILTERS: dict[str, Any] = {

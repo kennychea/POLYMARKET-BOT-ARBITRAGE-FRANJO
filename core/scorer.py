@@ -7,10 +7,12 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 from datetime import UTC, datetime
 from typing import Literal
 
 import anthropic
+from pydantic import BaseModel, Field, ValidationError
 
 import infra.config as cfg
 from core.fetcher import MarketData
@@ -24,16 +26,7 @@ _TEMPERATURE = 0.0
 _TIMEOUT = 30.0
 _MAX_RETRIES = 1
 
-SCORER_SYSTEM_PROMPT = (
-    "You are an expert probability assessor for prediction markets.\n"
-    "Your mission: estimate the TRUE probability (0.0 to 1.0) that an event resolves YES.\n"
-    "\n"
-    "Rules:\n"
-    "- Be calibrated: when you say 70%, it should happen ~70% of the time\n"
-    "- Identify biases (availability, recency, anchoring to market price)\n"
-    "- If insufficient data → confidence < 5, do not trade\n"
-    "- NEVER anchor to the current market price — assess independently first\n"
-    "\n"
+_JSON_FORMAT_BLOCK = (
     'Respond ONLY in JSON, no markdown, no preamble:\n'
     "{\n"
     '  "probability": 0.XX,\n'
@@ -45,6 +38,84 @@ SCORER_SYSTEM_PROMPT = (
     '  "data_quality": "high|medium|low"\n'
     "}"
 )
+
+_BASE_RULES = (
+    "Rules:\n"
+    "- Be calibrated: when you say 70%, it should happen ~70% of the time\n"
+    "- Identify biases (availability, recency, anchoring to market price)\n"
+    "- If insufficient data → confidence < 5, do not trade\n"
+    "- NEVER anchor to the current market price — assess independently first\n"
+)
+
+SCORER_SYSTEM_PROMPT = (
+    "You are an expert probability assessor for prediction markets.\n"
+    "Your mission: estimate the TRUE probability (0.0 to 1.0) that an event resolves YES.\n"
+    "\n" + _BASE_RULES + "\n" + _JSON_FORMAT_BLOCK
+)
+
+CATEGORY_PROMPTS: dict[str, str] = {
+    "politics": (
+        "You are an expert political analyst and probability assessor for prediction markets.\n"
+        "Your mission: estimate the TRUE probability (0.0 to 1.0) that a political event resolves YES.\n"
+        "\n"
+        "Domain expertise:\n"
+        "- Weigh polling data, sample sizes, and historical polling errors\n"
+        "- Consider electoral history, incumbency advantage, and institutional dynamics\n"
+        "- Account for partisan lean, demographic shifts, and turnout models\n"
+        "- Watch for legislative procedural hurdles and veto points\n"
+        "\n" + _BASE_RULES + "\n" + _JSON_FORMAT_BLOCK
+    ),
+    "science": (
+        "You are an expert science analyst and probability assessor for prediction markets.\n"
+        "Your mission: estimate the TRUE probability (0.0 to 1.0) that a scientific event resolves YES.\n"
+        "\n"
+        "Domain expertise:\n"
+        "- Prioritize peer-reviewed publications and replication status\n"
+        "- Assess scientific consensus vs. frontier claims critically\n"
+        "- Consider R&D timelines, regulatory approval stages, and funding cycles\n"
+        "- Distinguish incremental progress from breakthrough claims\n"
+        "\n" + _BASE_RULES + "\n" + _JSON_FORMAT_BLOCK
+    ),
+    "sports_outcome": (
+        "You are an expert sports analyst and probability assessor for prediction markets.\n"
+        "Your mission: estimate the TRUE probability (0.0 to 1.0) that a sports outcome resolves YES.\n"
+        "\n"
+        "Domain expertise:\n"
+        "- Analyze player/team statistics, recent form, and head-to-head records\n"
+        "- Factor in injuries, suspensions, and roster changes\n"
+        "- Cross-reference with bookmaker odds as a calibration anchor\n"
+        "- Consider home/away advantage, schedule fatigue, and motivation\n"
+        "\n" + _BASE_RULES + "\n" + _JSON_FORMAT_BLOCK
+    ),
+    "geopolitics": (
+        "You are an expert geopolitical analyst and probability assessor for prediction markets.\n"
+        "Your mission: estimate the TRUE probability (0.0 to 1.0) that a geopolitical event resolves YES.\n"
+        "\n"
+        "Domain expertise:\n"
+        "- Analyze international relations, alliances, and power dynamics\n"
+        "- Consider sanctions, treaties, and diplomatic precedents\n"
+        "- Weigh historical analogies carefully — base rates of escalation vs. de-escalation\n"
+        "- Account for domestic political incentives of key actors\n"
+        "\n" + _BASE_RULES + "\n" + _JSON_FORMAT_BLOCK
+    ),
+}
+CATEGORY_PROMPTS["default"] = SCORER_SYSTEM_PROMPT
+
+def _build_second_opinion_prompt(first: ScoringResult) -> str:
+    """Build the second-opinion system prompt with first analyst's results injected."""
+    return (
+        "You are reviewing another analyst's probability assessment for a prediction market.\n"
+        "Your mission: independently estimate the TRUE probability (0.0 to 1.0) that the event resolves YES.\n"
+        "\n"
+        f"The first analyst estimated probability={first.probability:.2f} with confidence={first.confidence}/10.\n"
+        f"Their reasoning: {first.reasoning}\n"
+        "\n"
+        "Your job:\n"
+        "- Do NOT simply agree — look for blind spots, overlooked factors, or reasoning errors\n"
+        "- If you agree, that is fine, but you must arrive there independently\n"
+        "- Challenge assumptions and consider alternative scenarios\n"
+        "\n" + _BASE_RULES + "\n" + _JSON_FORMAT_BLOCK
+    )
 
 
 def _build_user_message(market: MarketData, news_context: str) -> str:
@@ -66,6 +137,15 @@ def _strip_json_fences(text: str) -> str:
     return re.sub(r"^```(?:json)?\s*\n?|\n?```\s*$", "", text.strip())
 
 
+class ScorerResponse(BaseModel):
+    """Pydantic model for validating Claude API scorer responses."""
+
+    probability: float = Field(ge=0.0, le=1.0)
+    confidence: int = Field(ge=0, le=10)
+    reasoning: str = Field(min_length=10)
+    key_factors: list[str] = Field(min_length=1)
+
+
 def _parse_scoring_response(raw_text: str) -> ScoringResult | None:
     """Parse and validate Claude's JSON response into a ScoringResult."""
     cleaned = _strip_json_fences(raw_text)
@@ -75,34 +155,27 @@ def _parse_scoring_response(raw_text: str) -> ScoringResult | None:
         logger.warning("scorer_invalid_json", extra={"raw": raw_text[:200]})
         return None
 
-    prob = data.get("probability")
-    conf = data.get("confidence")
-    if prob is None or conf is None:
-        logger.warning("scorer_missing_fields", extra={"keys": list(data.keys())})
-        return None
-
-    prob = float(prob)
-    conf = int(conf)
-    if not (0.0 <= prob <= 1.0):
-        logger.warning("scorer_probability_out_of_range", extra={"probability": prob})
-        return None
-    if not (0 <= conf <= 10):
-        logger.warning("scorer_confidence_out_of_range", extra={"confidence": conf})
+    try:
+        validated = ScorerResponse.model_validate(data)
+    except ValidationError as exc:
+        logger.warning("scorer_validation_error", extra={"errors": str(exc)})
         return None
 
     return ScoringResult(
-        probability=prob,
-        confidence=conf,
-        reasoning=str(data.get("reasoning", "")),
-        key_factors=list(data.get("key_factors", [])),
+        probability=validated.probability,
+        confidence=validated.confidence,
+        reasoning=validated.reasoning,
+        key_factors=validated.key_factors,
         bear_case=str(data.get("bear_case", "")),
         bull_case=str(data.get("bull_case", "")),
         data_quality=str(data.get("data_quality", "low")),
     )
 
 
-def _call_claude(user_message: str) -> str | None:
-    """Call Anthropic API and return raw text response. Returns None on failure."""
+def _call_claude(
+    user_message: str, system_prompt: str = SCORER_SYSTEM_PROMPT,
+) -> anthropic.types.Message | None:
+    """Call Anthropic API and return full Message response (includes usage)."""
     client = anthropic.Anthropic(
         api_key=cfg.ANTHROPIC_API_KEY,
         timeout=_TIMEOUT,
@@ -111,9 +184,14 @@ def _call_claude(user_message: str) -> str | None:
         model=_MODEL,
         max_tokens=_MAX_TOKENS,
         temperature=_TEMPERATURE,
-        system=SCORER_SYSTEM_PROMPT,
+        system=system_prompt,
         messages=[{"role": "user", "content": user_message}],
     )
+    return response
+
+
+def _extract_text(response: anthropic.types.Message) -> str | None:
+    """Extract text content from Anthropic Message response."""
     block = response.content[0]
     if block.type == "text":
         return block.text
@@ -123,19 +201,45 @@ def _call_claude(user_message: str) -> str | None:
 def score_market(market: MarketData, news_context: str = "") -> ScoringResult | None:
     """Score a market by estimating true probability via Claude API.
 
-    Calls the Anthropic API, parses the JSON response, and validates fields.
+    Selects a category-specific system prompt, calls the Anthropic API,
+    parses the JSON response, and validates fields.
     Retries once on failure before returning None.
     """
+    category = getattr(market, "category", "default")
+    system_prompt = CATEGORY_PROMPTS.get(category, CATEGORY_PROMPTS["default"])
+    logger.info(
+        "scorer_prompt_selected",
+        extra={"market_id": market.market_id, "category": category},
+    )
+
     user_message = _build_user_message(market, news_context)
     attempts = 0
 
     while attempts <= _MAX_RETRIES:
         attempts += 1
         try:
-            raw_text = _call_claude(user_message)
-            if raw_text is None:
+            t0 = time.monotonic()
+            response = _call_claude(user_message, system_prompt=system_prompt)
+            elapsed = time.monotonic() - t0
+
+            if response is None:
                 logger.warning("scorer_empty_response", extra={"attempt": attempts})
                 continue
+
+            logger.info("scorer_api_call", extra={
+                "market_id": market.market_id,
+                "latency_ms": round(elapsed * 1000),
+                "input_tokens": response.usage.input_tokens,
+                "output_tokens": response.usage.output_tokens,
+                "model": _MODEL,
+                "category": category,
+            })
+
+            raw_text = _extract_text(response)
+            if raw_text is None:
+                logger.warning("scorer_no_text_block", extra={"attempt": attempts})
+                continue
+
             result = _parse_scoring_response(raw_text)
             if result is not None:
                 return result
@@ -148,6 +252,76 @@ def score_market(market: MarketData, news_context: str = "") -> ScoringResult | 
         extra={"market_id": market.market_id, "question": market.question[:60]},
     )
     return None
+
+
+def get_second_opinion(
+    market: MarketData,
+    news_context: str,
+    first_result: ScoringResult,
+) -> ScoringResult | None:
+    """Call Claude a second time with a reviewer prompt to cross-check the first score.
+
+    Returns a second ScoringResult, or None on failure.
+    Logs a WARNING if the two probabilities diverge by more than 0.15.
+    """
+    system_prompt = _build_second_opinion_prompt(first_result)
+    user_message = _build_user_message(market, news_context)
+
+    try:
+        t0 = time.monotonic()
+        response = _call_claude(user_message, system_prompt=system_prompt)
+        elapsed = time.monotonic() - t0
+
+        if response is None:
+            logger.warning("second_opinion_empty_response", extra={"market_id": market.market_id})
+            return None
+
+        logger.info("scorer_api_call", extra={
+            "market_id": market.market_id,
+            "latency_ms": round(elapsed * 1000),
+            "input_tokens": response.usage.input_tokens,
+            "output_tokens": response.usage.output_tokens,
+            "model": _MODEL,
+            "category": getattr(market, "category", "default"),
+        })
+
+        raw_text = _extract_text(response)
+        if raw_text is None:
+            logger.warning("second_opinion_no_text_block", extra={"market_id": market.market_id})
+            return None
+        result = _parse_scoring_response(raw_text)
+        if result is None:
+            logger.warning("second_opinion_parse_failed", extra={"market_id": market.market_id})
+            return None
+
+        divergence = abs(first_result.probability - result.probability)
+        logger.info(
+            "second_opinion_completed",
+            extra={
+                "market_id": market.market_id,
+                "first_prob": first_result.probability,
+                "second_prob": result.probability,
+                "divergence": round(divergence, 4),
+            },
+        )
+        if divergence > 0.15:
+            logger.warning(
+                "divergence_detected",
+                extra={
+                    "market_id": market.market_id,
+                    "first_prob": first_result.probability,
+                    "second_prob": result.probability,
+                    "divergence": round(divergence, 4),
+                },
+            )
+        return result
+    except Exception:
+        logger.warning(
+            "second_opinion_api_error",
+            extra={"market_id": market.market_id},
+            exc_info=True,
+        )
+        return None
 
 
 def compute_edge(score: ScoringResult, market: MarketData) -> EdgeResult:
@@ -202,6 +376,18 @@ def score_and_evaluate(
     score = score_market(market, news_context)
     if score is None:
         return None
+
+    if cfg.ENABLE_SECOND_OPINION:
+        second = get_second_opinion(market, news_context, score)
+        if second is not None:
+            logger.info(
+                "second_opinion_used",
+                extra={
+                    "market_id": market.market_id,
+                    "first_prob": score.probability,
+                    "second_prob": second.probability,
+                },
+            )
 
     edge = compute_edge(score, market)
     signal = build_trading_signal(market, score, edge, news_context)

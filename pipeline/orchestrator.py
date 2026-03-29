@@ -7,6 +7,7 @@ Entry points:
 from __future__ import annotations
 
 import logging
+import sqlite3
 import time
 from datetime import UTC, datetime
 from typing import Any
@@ -18,6 +19,17 @@ from core.fetcher import get_tradeable_markets
 from core.news import build_news_context
 from core.scorer import score_and_evaluate
 from infra.types import TradingSignal
+
+# Execution layer — optional, required only for live mode
+try:
+    from execution.clob import init_clob_client, place_limit_order
+    from execution.orders import record_fill
+    from execution.portfolio import get_portfolio_snapshot, run_resolution_cycle
+    from execution.sizing import compute_position_size
+
+    _EXECUTION_AVAILABLE = True
+except ImportError:
+    _EXECUTION_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 
@@ -90,20 +102,62 @@ def run_single_cycle(paper: bool = True) -> dict[str, Any]:
 
     # Step 6: Act on selected signals
     signals_sent = 0
-    for signal in selected:
-        if paper:
-            db.log_trade(signal, size_usdc=0.0, entry_price=signal.market_probability)
-            formatted = tg.format_trade_alert(
-                signal, size_usdc=0.0, entry_price=signal.market_probability,
-            )
-            alert_msg = f"[PAPER] {formatted}"
-            tg.send_alert(alert_msg)
-            signals_sent += 1
-        else:
-            logger.warning(
-                "live_mode_not_implemented",
-                extra={"market_id": signal.market_id},
-            )
+
+    if not paper and not _EXECUTION_AVAILABLE:
+        raise NotImplementedError(
+            "Live trading requires execution/ modules (sizing, clob, orders)"
+        )
+
+    conn: sqlite3.Connection | None = None
+    try:
+        if not paper:
+            conn = sqlite3.connect(cfg.DB_PATH)
+            conn.row_factory = sqlite3.Row
+            snapshot = get_portfolio_snapshot(conn)
+            open_positions = snapshot["open_positions"]
+            clob_client = init_clob_client()
+
+        for signal in selected:
+            if paper:
+                db.log_trade(signal, size_usdc=0.0, entry_price=signal.market_probability)
+                formatted = tg.format_trade_alert(
+                    signal, size_usdc=0.0, entry_price=signal.market_probability,
+                )
+                alert_msg = f"[PAPER] {formatted}"
+                tg.send_alert(alert_msg)
+                signals_sent += 1
+            else:
+                assert conn is not None
+                size = compute_position_size(
+                    signal, cfg.INITIAL_BANKROLL_USDC, open_positions, conn,
+                )
+                if size < cfg.MIN_TRADE_SIZE:
+                    logger.info("live_size_below_min", extra={
+                        "market_id": signal.market_id, "size": size,
+                    })
+                    continue
+
+                order_result = place_limit_order(
+                    clob_client, signal.market_id, signal.side, size,
+                )
+
+                if order_result.status == "placed":
+                    record_fill(conn, signal, order_result)
+                    signals_sent += 1
+                    logger.info("live_order_placed", extra={
+                        "market_id": signal.market_id,
+                        "size_usdc": size,
+                        "order_id": order_result.order_id,
+                    })
+                else:
+                    logger.warning("live_order_not_placed", extra={
+                        "market_id": signal.market_id,
+                        "status": order_result.status,
+                        "reason": order_result.reason,
+                    })
+    finally:
+        if conn is not None:
+            conn.close()
 
     # Step 7 + 8: Log scan summary
     duration = time.monotonic() - cycle_start
@@ -123,6 +177,20 @@ def run_single_cycle(paper: bool = True) -> dict[str, Any]:
             "duration_sec": round(duration, 2),
         },
     )
+
+    # Step 9: Resolution check — close positions on resolved markets
+    if _EXECUTION_AVAILABLE:
+        res_conn = sqlite3.connect(cfg.DB_PATH)
+        res_conn.row_factory = sqlite3.Row
+        try:
+            res_client = init_clob_client()
+            closed = run_resolution_cycle(res_conn, res_client)
+            if closed > 0:
+                logger.info("resolution_cycle_closed", extra={"closed": closed})
+        except Exception:
+            logger.warning("resolution_cycle_error", exc_info=True)
+        finally:
+            res_conn.close()
 
     return {
         "markets_scanned": total_markets,
