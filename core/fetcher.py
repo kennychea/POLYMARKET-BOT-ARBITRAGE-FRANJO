@@ -24,6 +24,10 @@ _PAGE_SIZE = 100
 _MAX_PAGES = 3
 _REQUEST_TIMEOUT = 15
 
+# Sprint 2 hotfix overrides — don't modify infra/config.py
+_VOLUME_MAX_OVERRIDE = 500_000      # was 50k, Kelly sizing handles exposure risk
+_DAYS_MAX_OVERRIDE = 90             # was 30, politics/sports often 2-3 months out
+
 # ── TTL cache ────────────────────────────────────────────────────────────────
 
 _cache: dict[str, tuple[float, Any]] = {}   # key → (expires_at, data)
@@ -282,13 +286,20 @@ def _parse_end_date(raw: dict[str, Any]) -> datetime | None:
 
 
 def _parse_tags(raw: dict[str, Any]) -> list[str]:
-    """Extract lowercase tag slugs from the tags field."""
+    """Extract lowercase tag slugs from the tags field.
+
+    Handles both dict format ({"slug": "x", "label": "X"}) and plain strings.
+    """
     tags_raw = raw.get("tags", [])
     if not isinstance(tags_raw, list):
         return []
     slugs: list[str] = []
     for tag in tags_raw:
-        if isinstance(tag, dict):
+        if isinstance(tag, str):
+            stripped = tag.strip()
+            if stripped:
+                slugs.append(stripped.lower())
+        elif isinstance(tag, dict):
             slug = tag.get("slug") or tag.get("label", "")
             if slug:
                 slugs.append(str(slug).lower())
@@ -353,30 +364,51 @@ def _tag_in_focus(tag: str, focus: list[str]) -> bool:
 
 # ── Filtering ─────────────────────────────────────────────────────────────────
 
-def _passes_filters(market: MarketData) -> bool:
-    """Apply all MARKET_FILTERS from config. Return True if market is tradeable."""
+def _check_filter(market: MarketData) -> str | None:
+    """Return the name of the first rejecting filter, or None if market passes."""
     f = cfg.MARKET_FILTERS
     vol_min = float(f["volume_min"])
-    vol_max = float(f["volume_max"])
-    days_min, days_max = float(f["days_to_resolution"][0]), float(f["days_to_resolution"][1])
+    vol_max = float(_VOLUME_MAX_OVERRIDE)
+    days_min = float(f["days_to_resolution"][0])
+    days_max = float(_DAYS_MAX_OVERRIDE)
     spread_max = float(f["spread_max"])
     price_lo, price_hi = float(f["price_range"][0]), float(f["price_range"][1])
     blacklist: list[str] = list(f["category_blacklist"])
     focus: list[str] = list(f["category_focus"])
 
     if not (vol_min <= market.volume <= vol_max):
-        return False
+        return "volume"
     if not (days_min <= market.days_to_resolution <= days_max):
-        return False
+        return "days_to_resolution"
     if market.spread > spread_max:
-        return False
+        return "spread"
     if not (price_lo <= market.yes_price <= price_hi):
-        return False
+        return "price_range"
     if market.category in blacklist:
-        return False
+        return "category_blacklist"
+
+    # Category focus: check tags first, fallback to detected category
     if not any(_tag_in_focus(tag, focus) for tag in market.tags):
-        return False
-    return True
+        if _tag_in_focus(market.category, focus):
+            logger.warning(
+                "category_focus_fallback",
+                extra={"market_id": market.market_id, "category": market.category},
+            )
+        else:
+            return "category_focus"
+
+    return None
+
+
+def _passes_filters(market: MarketData) -> bool:
+    """Apply all MARKET_FILTERS from config. Return True if market is tradeable."""
+    reason = _check_filter(market)
+    if reason is not None:
+        logger.debug(
+            "market_rejected",
+            extra={"market_id": market.market_id, "filter": reason},
+        )
+    return reason is None
 
 
 # ── Public parse + pipeline ───────────────────────────────────────────────────
@@ -437,18 +469,24 @@ def filter_markets(raw_markets: list[dict[str, Any]]) -> list[MarketData]:
     """Parse and filter raw API markets into tradeable MarketData."""
     results: list[MarketData] = []
     skipped_parse = 0
-    skipped_filter = 0
+    rejection_counts: dict[str, int] = {}
 
     for raw in raw_markets:
         market = parse_market(raw)
         if market is None:
             skipped_parse += 1
             continue
-        if not _passes_filters(market):
-            skipped_filter += 1
+        reason = _check_filter(market)
+        if reason is not None:
+            rejection_counts[reason] = rejection_counts.get(reason, 0) + 1
+            logger.debug(
+                "market_rejected",
+                extra={"market_id": market.market_id, "filter": reason},
+            )
             continue
         results.append(market)
 
+    skipped_filter = sum(rejection_counts.values())
     logger.info(
         "markets_filtered",
         extra={
@@ -456,6 +494,7 @@ def filter_markets(raw_markets: list[dict[str, Any]]) -> list[MarketData]:
             "skipped_parse": skipped_parse,
             "skipped_filter": skipped_filter,
             "tradeable": len(results),
+            **{f"rejected_{k}": v for k, v in rejection_counts.items()},
         },
     )
     return results

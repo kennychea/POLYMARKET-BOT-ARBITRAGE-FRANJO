@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -12,6 +13,7 @@ import pytest
 
 from core.fetcher import (
     MarketData,
+    _check_filter,
     _detect_category,
     _parse_prices,
     _parse_tags,
@@ -208,7 +210,7 @@ def test_passes_filters_volume_too_low() -> None:
 
 
 def test_passes_filters_volume_too_high() -> None:
-    assert _passes_filters(_make_market(volume=100_000.0)) is False
+    assert _passes_filters(_make_market(volume=600_000.0)) is False
 
 
 def test_passes_filters_days_too_few() -> None:
@@ -216,7 +218,7 @@ def test_passes_filters_days_too_few() -> None:
 
 
 def test_passes_filters_days_too_many() -> None:
-    assert _passes_filters(_make_market(days_to_resolution=45.0)) is False
+    assert _passes_filters(_make_market(days_to_resolution=100.0)) is False
 
 
 def test_passes_filters_spread_too_wide() -> None:
@@ -577,3 +579,78 @@ def test_get_tradeable_markets_returns_filtered_list() -> None:
 
     assert len(markets) == 1
     assert markets[0].market_id == "0xabc123"
+
+
+# ── Sprint 2 hotfix tests ────────────────────────────────────────────────────
+
+
+# Fix 1 — _parse_tags string/dict/mixed formats
+
+def test_parse_tags_string_format() -> None:
+    """Plain string tags should be parsed correctly."""
+    raw = {"tags": ["politics", "sports"]}
+    assert _parse_tags(raw) == ["politics", "sports"]
+
+
+def test_parse_tags_dict_format() -> None:
+    """Dict tags with slug/label should be parsed correctly."""
+    raw = {"tags": [{"slug": "politics", "label": "Politics"}]}
+    assert _parse_tags(raw) == ["politics"]
+
+
+def test_parse_tags_mixed_format() -> None:
+    """Mix of string and dict tags should all be parsed."""
+    raw = {"tags": ["sports", {"slug": "science", "label": "Science"}]}
+    assert _parse_tags(raw) == ["sports", "science"]
+
+
+# Fix 1 — category focus fallback to _detect_category
+
+def test_category_focus_fallback_to_detect_category() -> None:
+    """Empty tags but category detected from question → passes focus filter."""
+    market = _make_market(
+        question="Will the president win the election?",
+        tags=[],
+        category="politics",
+    )
+    assert _passes_filters(market) is True
+
+
+# Fix 2 — volume cap 500k
+
+def test_volume_cap_500k() -> None:
+    """Volume at 200k passes, volume at 600k rejected."""
+    assert _passes_filters(_make_market(volume=200_000.0)) is True
+    assert _passes_filters(_make_market(volume=600_000.0)) is False
+
+
+# Fix 3 — resolution window 90 days
+
+def test_resolution_window_90_days() -> None:
+    """60 days passes, 100 days rejected."""
+    assert _passes_filters(_make_market(days_to_resolution=60.0)) is True
+    assert _passes_filters(_make_market(days_to_resolution=100.0)) is False
+
+
+# Fix 4 — per-filter rejection logging
+
+def test_filter_rejection_logging(caplog: pytest.LogCaptureFixture) -> None:
+    """filter_markets summary should contain per-filter rejection counts."""
+    raw_list = [
+        _good_raw(),                            # passes
+        _good_raw(volume="500"),                 # rejected: volume
+        _good_raw(volume="500"),                 # rejected: volume
+        _good_raw(question=""),                  # skipped: parse error
+    ]
+    with caplog.at_level(logging.INFO, logger="core.fetcher"):
+        results = filter_markets(raw_list)
+
+    assert len(results) == 1
+
+    # Find the summary log record
+    summary = [r for r in caplog.records if r.message == "markets_filtered"]
+    assert len(summary) == 1
+    extra = summary[0].__dict__
+    assert extra["tradeable"] == 1
+    assert extra["skipped_parse"] == 1
+    assert extra["rejected_volume"] == 2
