@@ -29,6 +29,8 @@ CREATE TABLE IF NOT EXISTS trades (
     market_probability  REAL    NOT NULL,
     edge_net            REAL    NOT NULL,
     confidence          INTEGER NOT NULL,
+    order_id            TEXT    NOT NULL DEFAULT '',
+    size_shares         REAL    NOT NULL DEFAULT 0.0,
     status              TEXT    NOT NULL DEFAULT 'open'
                             CHECK(status IN ('open', 'won', 'lost', 'void', 'cancelled')),
     exit_price          REAL,
@@ -71,15 +73,22 @@ def init_db() -> None:
     logger.info("db_initialized", extra={"path": cfg.DB_PATH})
 
 
-def log_trade(signal: TradingSignal, size_usdc: float, entry_price: float) -> int:
+def log_trade(
+    signal: TradingSignal,
+    size_usdc: float,
+    entry_price: float,
+    order_id: str = "",
+    size_shares: float = 0.0,
+) -> int:
     """Insert a new trade record. Returns the assigned trade ID."""
     with _conn() as con:
         cursor = con.execute(
             """
             INSERT INTO trades
                 (timestamp, market_id, question, side, size_usdc, entry_price,
-                 agent_probability, market_probability, edge_net, confidence, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open')
+                 agent_probability, market_probability, edge_net, confidence,
+                 order_id, size_shares, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open')
             """,
             (
                 signal.timestamp.isoformat(),
@@ -92,6 +101,8 @@ def log_trade(signal: TradingSignal, size_usdc: float, entry_price: float) -> in
                 signal.market_probability,
                 signal.edge_net,
                 signal.confidence,
+                order_id,
+                size_shares,
             ),
         )
         trade_id: int = cursor.lastrowid  # type: ignore[assignment]

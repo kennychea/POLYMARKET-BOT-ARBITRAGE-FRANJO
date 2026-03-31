@@ -58,16 +58,32 @@ FAKE_SCANS = [
     },
 ]
 
-FAKE_CALIBRATION_DICTS = [
-    {
-        "bucket_low": 0.3,
-        "bucket_high": 0.4,
-        "predicted_prob": 0.35,
-        "actual_win_rate": 0.40,
-        "count": 5,
+FAKE_CALIBRATION_REPORT: dict[str, object] = {
+    "buckets": [
+        {
+            "range": "0.3-0.4",
+            "predicted": 0.35,
+            "actual": 0.40,
+            "error": 0.05,
+            "samples": 5,
+        },
+    ],
+    "is_calibrated": False,
+    "total_resolved": 5,
+    "worst_bucket": {
+        "range": "0.3-0.4",
         "error": 0.05,
+        "samples": 5,
     },
-]
+}
+
+FAKE_PORTFOLIO_SNAPSHOT: dict[str, object] = {
+    "open_positions": [],
+    "total_exposure_usdc": 0.0,
+    "position_count": 0,
+    "categories": {},
+    "available_slots": 5,
+}
 
 
 class TestGetTrades:
@@ -103,33 +119,111 @@ class TestGetScans:
         assert resp.json() == []
 
 
-class TestGetCalibration:
-    @patch("dashboard.api.db.compute_calibration")
-    def test_returns_calibration_buckets(self, mock_cal: object) -> None:
-        from infra.types import CalibrationBucket
+class TestGetStatus:
+    @patch("dashboard.api.db.get_all_trades", return_value=FAKE_TRADES)
+    def test_returns_aggregated_stats(self, mock_db: object) -> None:
+        resp = client.get("/api/status")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["total_trades"] == 2
+        assert data["open_trades"] == 1
+        assert data["resolved_trades"] == 1
+        assert data["wins"] == 1
+        assert data["losses"] == 0
+        assert data["win_rate"] == 1.0
+        assert data["total_pnl"] == 12.0
+        assert "timestamp" in data
 
-        mock_cal.return_value = [  # type: ignore[union-attr]
-            CalibrationBucket(
-                bucket_low=0.3,
-                bucket_high=0.4,
-                predicted_prob=0.35,
-                actual_win_rate=0.40,
-                count=5,
-                error=0.05,
-            )
-        ]
+    @patch("dashboard.api.db.get_all_trades", return_value=[])
+    def test_status_empty_db(self, mock_db: object) -> None:
+        resp = client.get("/api/status")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["total_trades"] == 0
+        assert data["win_rate"] == 0.0
+        assert data["total_pnl"] == 0.0
+
+
+class TestGetPositions:
+    @patch("dashboard.api.get_portfolio_snapshot", return_value=FAKE_PORTFOLIO_SNAPSHOT)
+    def test_returns_empty_portfolio(self, mock_snap: object) -> None:
+        resp = client.get("/api/positions")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["position_count"] == 0
+        assert data["open_positions"] == []
+        assert data["available_slots"] == 5
+        assert data["total_exposure_usdc"] == 0.0
+
+    @patch("dashboard.api.get_portfolio_snapshot")
+    def test_returns_positions_with_data(self, mock_snap: object) -> None:
+        from infra.types import Position, TradingSignal
+
+        signal = TradingSignal(
+            market_id="0xabc123",
+            question="Will X happen?",
+            side="YES",
+            agent_probability=0.65,
+            market_probability=0.55,
+            edge_net=0.08,
+            confidence=7,
+            tradeable=True,
+            news_context="",
+            timestamp=datetime(2026, 3, 28, 12, 0, tzinfo=UTC),
+        )
+        pos = Position(
+            position_id="1",
+            signal=signal,
+            entry_price=0.55,
+            size_usdc=10.0,
+            size_shares=18.18,
+            order_id="order-1",
+            status="open",
+            pnl=None,
+        )
+        mock_snap.return_value = {  # type: ignore[union-attr]
+            "open_positions": [pos],
+            "total_exposure_usdc": 10.0,
+            "position_count": 1,
+            "categories": {"other": 1},
+            "available_slots": 4,
+        }
+        resp = client.get("/api/positions")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["position_count"] == 1
+        assert len(data["open_positions"]) == 1
+        assert data["open_positions"][0]["signal"]["market_id"] == "0xabc123"
+        assert data["total_exposure_usdc"] == 10.0
+
+
+class TestGetCalibration:
+    @patch("dashboard.api.get_calibration_report", return_value=FAKE_CALIBRATION_REPORT)
+    def test_returns_calibration_report(self, mock_cal: object) -> None:
         resp = client.get("/api/calibration")
         assert resp.status_code == 200
         data = resp.json()
-        assert len(data) == 1
-        assert data[0]["predicted_prob"] == 0.35
-        assert data[0]["error"] == 0.05
+        assert len(data["buckets"]) == 1
+        assert data["buckets"][0]["predicted"] == 0.35
+        assert data["is_calibrated"] is False
+        assert data["total_resolved"] == 5
+        assert data["worst_bucket"]["error"] == 0.05
 
-    @patch("dashboard.api.db.compute_calibration", return_value=[])
+    @patch(
+        "dashboard.api.get_calibration_report",
+        return_value={
+            "buckets": [],
+            "is_calibrated": False,
+            "total_resolved": 0,
+            "worst_bucket": None,
+        },
+    )
     def test_returns_empty_calibration(self, mock_cal: object) -> None:
         resp = client.get("/api/calibration")
         assert resp.status_code == 200
-        assert resp.json() == []
+        data = resp.json()
+        assert data["buckets"] == []
+        assert data["total_resolved"] == 0
 
 
 class TestGetHealth:

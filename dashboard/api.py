@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import sqlite3
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import asdict
@@ -13,6 +14,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 import infra.config as cfg
 import infra.db as db
+from core.calibration import get_calibration_report
+from execution.portfolio import get_portfolio_snapshot
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +38,7 @@ app.add_middleware(
 
 @app.get("/api/trades")
 def get_trades() -> list[dict[str, Any]]:
-    """Return all trades (open + resolved)."""
+    """Return all trades (open + resolved) from DB."""
     return db.get_all_trades()
 
 
@@ -45,11 +48,52 @@ def get_scans() -> list[dict[str, Any]]:
     return db.get_scans()
 
 
+@app.get("/api/status")
+def get_status() -> dict[str, Any]:
+    """Return aggregated trading stats from DB."""
+    trades = db.get_all_trades()
+    open_trades = [t for t in trades if t["status"] == "open"]
+    resolved = [t for t in trades if t["status"] in ("won", "lost")]
+    wins = [t for t in resolved if t["status"] == "won"]
+    total_pnl = sum(t.get("pnl", 0) or 0 for t in resolved)
+
+    return {
+        "total_trades": len(trades),
+        "open_trades": len(open_trades),
+        "resolved_trades": len(resolved),
+        "wins": len(wins),
+        "losses": len(resolved) - len(wins),
+        "win_rate": round(len(wins) / len(resolved), 4) if resolved else 0.0,
+        "total_pnl": round(total_pnl, 2),
+        "timestamp": datetime.now(UTC).isoformat(),
+    }
+
+
+@app.get("/api/positions")
+def get_positions() -> dict[str, Any]:
+    """Return current portfolio snapshot via execution.portfolio."""
+    conn = sqlite3.connect(cfg.DB_PATH)
+    try:
+        snapshot = get_portfolio_snapshot(conn)
+    finally:
+        conn.close()
+
+    serialized_positions = []
+    for pos in snapshot.get("open_positions", []):
+        d = asdict(pos)
+        # Convert datetime to ISO string for JSON serialization
+        if hasattr(pos.signal, "timestamp"):
+            d["signal"]["timestamp"] = pos.signal.timestamp.isoformat()
+        serialized_positions.append(d)
+
+    snapshot["open_positions"] = serialized_positions
+    return snapshot
+
+
 @app.get("/api/calibration")
-def get_calibration() -> list[dict[str, Any]]:
-    """Return calibration buckets for resolved trades."""
-    buckets = db.compute_calibration()
-    return [asdict(b) for b in buckets]
+def get_calibration() -> dict[str, object]:
+    """Return calibration report via core.calibration."""
+    return get_calibration_report()
 
 
 @app.get("/api/health")

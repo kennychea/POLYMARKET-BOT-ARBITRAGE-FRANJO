@@ -112,6 +112,19 @@ def test_log_trade_round_trip() -> None:
     assert row["entry_price"] == pytest.approx(0.20)
     assert row["agent_probability"] == pytest.approx(0.80)
     assert row["status"] == "open"
+    assert row["order_id"] == ""
+    assert row["size_shares"] == pytest.approx(0.0)
+
+
+def test_log_trade_with_order_id_and_size_shares() -> None:
+    """order_id and size_shares are stored when provided."""
+    sig = _make_signal(market_id="mkt-oid")
+    tid = log_trade(sig, size_usdc=50.0, entry_price=0.55, order_id="ord-abc", size_shares=90.9)
+
+    with db_module._conn() as con:
+        row = con.execute("SELECT * FROM trades WHERE id = ?", (tid,)).fetchone()
+    assert row["order_id"] == "ord-abc"
+    assert row["size_shares"] == pytest.approx(90.9)
 
 
 def test_log_trade_multiple_ids_unique() -> None:
@@ -182,6 +195,8 @@ def test_get_open_positions_returns_dicts() -> None:
     positions = get_open_positions()
     assert isinstance(positions[0], dict)
     assert "market_id" in positions[0]
+    assert "order_id" in positions[0]
+    assert "size_shares" in positions[0]
 
 
 # ── compute_calibration ──────────────────────────────────────────────────────

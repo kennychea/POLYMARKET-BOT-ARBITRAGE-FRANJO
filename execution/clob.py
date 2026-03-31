@@ -7,6 +7,7 @@ from typing import Any
 from py_clob_client.client import ClobClient
 from py_clob_client.clob_types import OrderArgs
 
+import infra.config as cfg
 from infra.config import POLYMARKET_PRIVATE_KEY
 from infra.types import OrderResult
 
@@ -34,6 +35,23 @@ def init_clob_client() -> ClobClient:
     except Exception:
         logger.error("clob_client_init_failed", extra={"chain_id": POLYGON_CHAIN_ID})
         raise
+
+
+def get_wallet_balance(client: ClobClient) -> float:
+    """Fetch wallet USDC balance from the CLOB client.
+
+    Falls back to cfg.INITIAL_BANKROLL_USDC if the API call fails.
+    """
+    try:
+        balance = float(client.get_balance())
+        logger.info("wallet_balance_fetched", extra={"balance": balance})
+        return balance
+    except Exception:
+        logger.warning(
+            "wallet_balance_fetch_failed",
+            extra={"fallback": cfg.INITIAL_BANKROLL_USDC},
+        )
+        return cfg.INITIAL_BANKROLL_USDC
 
 
 def get_best_price(client: ClobClient, token_id: str) -> float | None:

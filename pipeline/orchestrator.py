@@ -22,8 +22,8 @@ from infra.types import TradingSignal
 
 # Execution layer — optional, required only for live mode
 try:
-    from execution.clob import init_clob_client, place_limit_order
-    from execution.orders import record_fill
+    from execution.clob import get_wallet_balance, init_clob_client, place_limit_order
+    from execution.orders import cancel_stale_orders, record_fill
     from execution.portfolio import get_portfolio_snapshot, run_resolution_cycle
     from execution.sizing import compute_position_size
 
@@ -116,6 +116,7 @@ def run_single_cycle(paper: bool = True) -> dict[str, Any]:
             snapshot = get_portfolio_snapshot(conn)
             open_positions = snapshot["open_positions"]
             clob_client = init_clob_client()
+            bankroll = get_wallet_balance(clob_client)
 
         for signal in selected:
             if paper:
@@ -129,7 +130,7 @@ def run_single_cycle(paper: bool = True) -> dict[str, Any]:
             else:
                 assert conn is not None
                 size = compute_position_size(
-                    signal, cfg.INITIAL_BANKROLL_USDC, open_positions, conn,
+                    signal, bankroll, open_positions, conn,
                 )
                 if size < cfg.MIN_TRADE_SIZE:
                     logger.info("live_size_below_min", extra={
@@ -178,8 +179,17 @@ def run_single_cycle(paper: bool = True) -> dict[str, Any]:
         },
     )
 
+    # Step 8.5: Cancel stale open orders (live only)
+    if not paper and _EXECUTION_AVAILABLE:
+        try:
+            stale_client = init_clob_client()
+            cancelled = cancel_stale_orders(stale_client)
+            logger.info("stale_orders_cleaned", extra={"cancelled": cancelled})
+        except Exception:
+            logger.warning("stale_orders_cleanup_error", exc_info=True)
+
     # Step 9: Resolution check — close positions on resolved markets
-    if _EXECUTION_AVAILABLE:
+    if not paper and _EXECUTION_AVAILABLE:
         res_conn = sqlite3.connect(cfg.DB_PATH)
         res_conn.row_factory = sqlite3.Row
         try:

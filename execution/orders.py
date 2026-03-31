@@ -137,6 +137,8 @@ def record_fill(
             signal,
             size_usdc=order_result.cost_usdc or 0.0,
             entry_price=order_result.price or 0.0,
+            order_id=order_result.order_id or "",
+            size_shares=order_result.size_shares or 0.0,
         )
     except Exception as exc:
         logger.error("record_fill_db_error", extra={

@@ -64,6 +64,8 @@ def _make_db() -> sqlite3.Connection:
             market_probability  REAL NOT NULL,
             edge_net            REAL NOT NULL,
             confidence          INTEGER NOT NULL,
+            order_id            TEXT NOT NULL DEFAULT '',
+            size_shares         REAL NOT NULL DEFAULT 0.0,
             status              TEXT NOT NULL DEFAULT 'open',
             exit_price          REAL,
             pnl                 REAL,
@@ -202,6 +204,9 @@ def test_record_fill_success(mock_log: MagicMock, mock_alert: MagicMock) -> None
     trade_id = record_fill(conn, signal, order_result)
     assert trade_id == 42
     mock_log.assert_called_once()
+    call_kwargs = mock_log.call_args
+    assert call_kwargs[1]["order_id"] == "order-123"
+    assert call_kwargs[1]["size_shares"] == pytest.approx(90.09)
     mock_alert.assert_called_once()
     conn.close()
 

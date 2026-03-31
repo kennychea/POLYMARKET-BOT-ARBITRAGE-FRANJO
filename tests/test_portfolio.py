@@ -77,6 +77,8 @@ def _make_db(trades: list[dict] | None = None) -> sqlite3.Connection:
             market_probability REAL NOT NULL,
             edge_net REAL NOT NULL,
             confidence INTEGER NOT NULL,
+            order_id TEXT NOT NULL DEFAULT '',
+            size_shares REAL NOT NULL DEFAULT 0.0,
             status TEXT NOT NULL DEFAULT 'open',
             exit_price REAL,
             pnl REAL,
@@ -150,6 +152,7 @@ def test_snapshot_with_positions(mock_get: MagicMock) -> None:
             "side": "YES", "size_usdc": 50.0, "entry_price": 0.50,
             "agent_probability": 0.60, "market_probability": 0.50,
             "edge_net": 0.08, "confidence": 7, "status": "open",
+            "order_id": f"ord-{i}", "size_shares": 100.0,
         }
         for i in range(1, 4)
     ]
@@ -363,7 +366,7 @@ def test_resolution_cycle_closes_resolved(
             "market_id": f"mkt-{i}", "question": "test?", "side": "YES",
             "size_usdc": 50.0, "entry_price": 0.50, "agent_probability": 0.60,
             "market_probability": 0.50, "edge_net": 0.08, "confidence": 7,
-            "status": "open",
+            "status": "open", "order_id": f"ord-{i}", "size_shares": 100.0,
         }
         for i in range(1, 3)
     ]

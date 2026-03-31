@@ -272,8 +272,8 @@ def _rows_to_positions(rows: list[dict[str, Any]]) -> list[Position]:
             signal=signal,
             entry_price=row["entry_price"],
             size_usdc=row["size_usdc"],
-            size_shares=row.get("size_shares", row["size_usdc"] / row["entry_price"]),
-            order_id=str(row.get("order_id", "")),
+            size_shares=row["size_shares"],
+            order_id=row["order_id"],
             status=row["status"],
             pnl=row.get("pnl"),
         ))

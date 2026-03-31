@@ -12,6 +12,7 @@ from execution.clob import (
     compute_limit_price,
     get_best_price,
     get_open_orders,
+    get_wallet_balance,
     place_limit_order,
 )
 
@@ -36,6 +37,24 @@ def _mock_orderbook(asks: list[dict[str, Any]] | None = None) -> SimpleNamespace
         last_trade_price=0.5,
         hash="",
     )
+
+
+# ── get_wallet_balance ───────────────────────────────────────────────────────
+
+def test_get_wallet_balance_success() -> None:
+    """Mock client.get_balance() returns value → float returned."""
+    client = _mock_client()
+    client.get_balance.return_value = "142.50"
+    assert get_wallet_balance(client) == pytest.approx(142.50)
+
+
+def test_get_wallet_balance_fallback_on_error() -> None:
+    """Mock client.get_balance() throws → returns INITIAL_BANKROLL_USDC."""
+    client = _mock_client()
+    client.get_balance.side_effect = Exception("RPC error")
+    with patch("execution.clob.cfg.INITIAL_BANKROLL_USDC", 100.0):
+        result = get_wallet_balance(client)
+    assert result == pytest.approx(100.0)
 
 
 # ── compute_limit_price (pure function) ──────────────────────────────────────
