@@ -15,6 +15,8 @@ import anthropic
 from pydantic import BaseModel, Field, ValidationError
 
 import infra.config as cfg
+import infra.db as db
+from core.calibration import apply_calibration_adjustment, is_calibrated
 from core.fetcher import MarketData
 from infra.types import EdgeResult, ScoringResult, TradingSignal
 
@@ -56,7 +58,8 @@ SCORER_SYSTEM_PROMPT = (
 CATEGORY_PROMPTS: dict[str, str] = {
     "politics": (
         "You are an expert political analyst and probability assessor for prediction markets.\n"
-        "Your mission: estimate the TRUE probability (0.0 to 1.0) that a political event resolves YES.\n"
+        "Your mission: estimate the TRUE probability (0.0 to 1.0) "
+        "that a political event resolves YES.\n"
         "\n"
         "Domain expertise:\n"
         "- Weigh polling data, sample sizes, and historical polling errors\n"
@@ -67,7 +70,8 @@ CATEGORY_PROMPTS: dict[str, str] = {
     ),
     "science": (
         "You are an expert science analyst and probability assessor for prediction markets.\n"
-        "Your mission: estimate the TRUE probability (0.0 to 1.0) that a scientific event resolves YES.\n"
+        "Your mission: estimate the TRUE probability (0.0 to 1.0) "
+        "that a scientific event resolves YES.\n"
         "\n"
         "Domain expertise:\n"
         "- Prioritize peer-reviewed publications and replication status\n"
@@ -78,7 +82,8 @@ CATEGORY_PROMPTS: dict[str, str] = {
     ),
     "sports_outcome": (
         "You are an expert sports analyst and probability assessor for prediction markets.\n"
-        "Your mission: estimate the TRUE probability (0.0 to 1.0) that a sports outcome resolves YES.\n"
+        "Your mission: estimate the TRUE probability (0.0 to 1.0) "
+        "that a sports outcome resolves YES.\n"
         "\n"
         "Domain expertise:\n"
         "- Analyze player/team statistics, recent form, and head-to-head records\n"
@@ -89,7 +94,8 @@ CATEGORY_PROMPTS: dict[str, str] = {
     ),
     "geopolitics": (
         "You are an expert geopolitical analyst and probability assessor for prediction markets.\n"
-        "Your mission: estimate the TRUE probability (0.0 to 1.0) that a geopolitical event resolves YES.\n"
+        "Your mission: estimate the TRUE probability (0.0 to 1.0) "
+        "that a geopolitical event resolves YES.\n"
         "\n"
         "Domain expertise:\n"
         "- Analyze international relations, alliances, and power dynamics\n"
@@ -105,9 +111,11 @@ def _build_second_opinion_prompt(first: ScoringResult) -> str:
     """Build the second-opinion system prompt with first analyst's results injected."""
     return (
         "You are reviewing another analyst's probability assessment for a prediction market.\n"
-        "Your mission: independently estimate the TRUE probability (0.0 to 1.0) that the event resolves YES.\n"
+        "Your mission: independently estimate the TRUE probability (0.0 to 1.0) "
+        "that the event resolves YES.\n"
         "\n"
-        f"The first analyst estimated probability={first.probability:.2f} with confidence={first.confidence}/10.\n"
+        f"The first analyst estimated probability={first.probability:.2f} "
+        f"with confidence={first.confidence}/10.\n"
         f"Their reasoning: {first.reasoning}\n"
         "\n"
         "Your job:\n"
@@ -380,14 +388,74 @@ def score_and_evaluate(
     if cfg.ENABLE_SECOND_OPINION:
         second = get_second_opinion(market, news_context, score)
         if second is not None:
-            logger.info(
-                "second_opinion_used",
-                extra={
-                    "market_id": market.market_id,
-                    "first_prob": score.probability,
-                    "second_prob": second.probability,
-                },
-            )
+            divergence = abs(score.probability - second.probability)
+            if divergence <= 0.15:
+                merged_prob = (score.probability + second.probability) / 2
+                logger.info(
+                    "second_opinion_merged",
+                    extra={
+                        "market_id": market.market_id,
+                        "first_prob": score.probability,
+                        "second_prob": second.probability,
+                        "merged_prob": round(merged_prob, 4),
+                    },
+                )
+                score = ScoringResult(
+                    probability=merged_prob,
+                    confidence=score.confidence,
+                    reasoning=score.reasoning,
+                    key_factors=score.key_factors,
+                    bear_case=score.bear_case,
+                    bull_case=score.bull_case,
+                    data_quality=score.data_quality,
+                )
+            else:
+                logger.warning(
+                    "second_opinion_diverged",
+                    extra={
+                        "market_id": market.market_id,
+                        "first_prob": score.probability,
+                        "second_prob": second.probability,
+                        "divergence": round(divergence, 4),
+                    },
+                )
+                score = ScoringResult(
+                    probability=score.probability,
+                    confidence=score.confidence,
+                    reasoning=score.reasoning,
+                    key_factors=score.key_factors,
+                    bear_case=score.bear_case,
+                    bull_case=score.bull_case,
+                    data_quality="low",
+                )
+
+    # Apply calibration adjustment if we have enough data
+    buckets = db.compute_calibration()
+    if is_calibrated(buckets):
+        raw_prob = score.probability
+        adjusted = apply_calibration_adjustment(raw_prob, buckets)
+        logger.info(
+            "calibration_applied",
+            extra={
+                "market_id": market.market_id,
+                "raw": raw_prob,
+                "adjusted": adjusted,
+            },
+        )
+        score = ScoringResult(
+            probability=adjusted,
+            confidence=score.confidence,
+            reasoning=score.reasoning,
+            key_factors=score.key_factors,
+            bear_case=score.bear_case,
+            bull_case=score.bull_case,
+            data_quality=score.data_quality,
+        )
+    else:
+        logger.info(
+            "calibration_skipped_not_ready",
+            extra={"market_id": market.market_id},
+        )
 
     edge = compute_edge(score, market)
     signal = build_trading_signal(market, score, edge, news_context)

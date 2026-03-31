@@ -19,7 +19,7 @@ from core.scorer import (
     score_and_evaluate,
     score_market,
 )
-from infra.types import EdgeResult, ScoringResult
+from infra.types import CalibrationBucket, EdgeResult, ScoringResult
 
 
 # ── Fixtures ─────────────────────────────────────────────────────────────────
@@ -280,10 +280,11 @@ def test_second_opinion_api_failure_returns_none(mock_call: MagicMock) -> None:
 # ── score_and_evaluate with second opinion ──────────────────────────────────
 
 
+@patch("core.scorer.db.compute_calibration", return_value=[])
 @patch("core.scorer.get_second_opinion")
 @patch("core.scorer.score_market")
 def test_score_and_evaluate_calls_second_opinion_when_enabled(
-    mock_score: MagicMock, mock_second: MagicMock
+    mock_score: MagicMock, mock_second: MagicMock, _mock_cal: MagicMock,
 ) -> None:
     """ENABLE_SECOND_OPINION=True → get_second_opinion is called."""
     mock_score.return_value = ScoringResult(
@@ -305,10 +306,11 @@ def test_score_and_evaluate_calls_second_opinion_when_enabled(
     mock_second.assert_called_once()
 
 
+@patch("core.scorer.db.compute_calibration", return_value=[])
 @patch("core.scorer.get_second_opinion")
 @patch("core.scorer.score_market")
 def test_score_and_evaluate_skips_second_opinion_when_disabled(
-    mock_score: MagicMock, mock_second: MagicMock
+    mock_score: MagicMock, mock_second: MagicMock, _mock_cal: MagicMock,
 ) -> None:
     """ENABLE_SECOND_OPINION=False → get_second_opinion is NOT called."""
     mock_score.return_value = ScoringResult(
@@ -428,8 +430,11 @@ def test_build_trading_signal_maps_fields() -> None:
 # ── score_and_evaluate tests ─────────────────────────────────────────────────
 
 
+@patch("core.scorer.db.compute_calibration", return_value=[])
 @patch("core.scorer.score_market")
-def test_score_and_evaluate_tradeable(mock_score: MagicMock) -> None:
+def test_score_and_evaluate_tradeable(
+    mock_score: MagicMock, _mock_cal: MagicMock,
+) -> None:
     """Tradeable signal → returns TradingSignal."""
     mock_score.return_value = ScoringResult(
         probability=0.70, confidence=8,
@@ -446,8 +451,11 @@ def test_score_and_evaluate_tradeable(mock_score: MagicMock) -> None:
     assert signal.agent_probability == 0.70
 
 
+@patch("core.scorer.db.compute_calibration", return_value=[])
 @patch("core.scorer.score_market")
-def test_score_and_evaluate_not_tradeable(mock_score: MagicMock) -> None:
+def test_score_and_evaluate_not_tradeable(
+    mock_score: MagicMock, _mock_cal: MagicMock,
+) -> None:
     """Not tradeable → returns None."""
     mock_score.return_value = ScoringResult(
         probability=0.52, confidence=7,
@@ -538,3 +546,166 @@ def test_score_market_logs_latency_and_tokens(
     assert extra["input_tokens"] == 200
     assert extra["output_tokens"] == 80
     assert extra["model"] == "claude-sonnet-4-20250514"
+
+
+# ── Calibration integration in score_and_evaluate ───────────────────────────
+
+
+def _calibrated_buckets() -> list[CalibrationBucket]:
+    """Buckets where scorer overestimates by +0.05 in the 0.6-0.7 range."""
+    return [
+        CalibrationBucket(
+            bucket_low=0.6, bucket_high=0.7,
+            predicted_prob=0.65, actual_win_rate=0.60,
+            count=20, error=0.05,
+        ),
+    ]
+
+
+@patch("core.scorer.db.compute_calibration")
+@patch("core.scorer.score_market")
+def test_score_and_evaluate_applies_calibration(
+    mock_score: MagicMock,
+    mock_cal: MagicMock,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """When calibrated, probability should be adjusted."""
+    mock_score.return_value = ScoringResult(
+        probability=0.65, confidence=8,
+        reasoning="Solid analysis", key_factors=["a"],
+        bear_case="b", bull_case="c", data_quality="high",
+    )
+    mock_cal.return_value = _calibrated_buckets()
+    market = _make_market(yes_price=0.50, no_price=0.50)
+
+    import logging
+    with caplog.at_level(logging.INFO):
+        signal = score_and_evaluate(market, news_context="news")
+
+    assert signal is not None
+    # raw=0.65, adjustment = 0.60 - 0.65 = -0.05 → adjusted=0.60
+    assert signal.agent_probability == pytest.approx(0.60)
+    assert any("calibration_applied" in r.message for r in caplog.records)
+
+
+@patch("core.scorer.db.compute_calibration", return_value=[])
+@patch("core.scorer.score_market")
+def test_score_and_evaluate_skips_calibration_when_not_ready(
+    mock_score: MagicMock,
+    _mock_cal: MagicMock,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """When not calibrated (empty buckets), use raw probability."""
+    mock_score.return_value = ScoringResult(
+        probability=0.70, confidence=8,
+        reasoning="High edge case", key_factors=["x"],
+        bear_case="b", bull_case="c", data_quality="high",
+    )
+    market = _make_market(yes_price=0.50, no_price=0.50)
+
+    import logging
+    with caplog.at_level(logging.INFO):
+        signal = score_and_evaluate(market, news_context="news")
+
+    assert signal is not None
+    assert signal.agent_probability == pytest.approx(0.70)
+    assert any(
+        "calibration_skipped_not_ready" in r.message for r in caplog.records
+    )
+
+
+# ── Second opinion merge in score_and_evaluate ──────────────────────────────
+
+
+@patch("core.scorer.db.compute_calibration", return_value=[])
+@patch("core.scorer.get_second_opinion")
+@patch("core.scorer.score_market")
+def test_second_opinion_merge_low_divergence(
+    mock_score: MagicMock,
+    mock_second: MagicMock,
+    _mock_cal: MagicMock,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Divergence <= 0.15 → probability is averaged."""
+    mock_score.return_value = ScoringResult(
+        probability=0.70, confidence=8,
+        reasoning="Strong", key_factors=["a"],
+        bear_case="b", bull_case="c", data_quality="high",
+    )
+    mock_second.return_value = ScoringResult(
+        probability=0.60, confidence=7,
+        reasoning="Close", key_factors=["b"],
+        bear_case="", bull_case="", data_quality="high",
+    )
+    market = _make_market(yes_price=0.50, no_price=0.50)
+
+    import logging
+    with (
+        patch("core.scorer.cfg.ENABLE_SECOND_OPINION", True),
+        caplog.at_level(logging.INFO),
+    ):
+        signal = score_and_evaluate(market, news_context="news")
+
+    assert signal is not None
+    # (0.70 + 0.60) / 2 = 0.65
+    assert signal.agent_probability == pytest.approx(0.65)
+    assert any("second_opinion_merged" in r.message for r in caplog.records)
+
+
+@patch("core.scorer.db.compute_calibration", return_value=[])
+@patch("core.scorer.get_second_opinion")
+@patch("core.scorer.score_market")
+def test_second_opinion_diverged_sets_low_quality(
+    mock_score: MagicMock,
+    mock_second: MagicMock,
+    _mock_cal: MagicMock,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Divergence > 0.15 → keeps first prob, sets data_quality='low'."""
+    mock_score.return_value = ScoringResult(
+        probability=0.70, confidence=8,
+        reasoning="High", key_factors=["a"],
+        bear_case="b", bull_case="c", data_quality="high",
+    )
+    mock_second.return_value = ScoringResult(
+        probability=0.40, confidence=6,
+        reasoning="Very different", key_factors=["x"],
+        bear_case="", bull_case="", data_quality="high",
+    )
+    market = _make_market(yes_price=0.50, no_price=0.50)
+
+    import logging
+    with (
+        patch("core.scorer.cfg.ENABLE_SECOND_OPINION", True),
+        caplog.at_level(logging.WARNING),
+    ):
+        signal = score_and_evaluate(market, news_context="news")
+
+    assert signal is not None
+    # Keeps first probability
+    assert signal.agent_probability == pytest.approx(0.70)
+    assert any("second_opinion_diverged" in r.message for r in caplog.records)
+
+
+@patch("core.scorer.db.compute_calibration", return_value=[])
+@patch("core.scorer.get_second_opinion")
+@patch("core.scorer.score_market")
+def test_second_opinion_none_uses_first_only(
+    mock_score: MagicMock,
+    mock_second: MagicMock,
+    _mock_cal: MagicMock,
+) -> None:
+    """Second opinion returns None → uses first score unchanged."""
+    mock_score.return_value = ScoringResult(
+        probability=0.70, confidence=8,
+        reasoning="Good", key_factors=["a"],
+        bear_case="b", bull_case="c", data_quality="high",
+    )
+    mock_second.return_value = None
+    market = _make_market(yes_price=0.50, no_price=0.50)
+
+    with patch("core.scorer.cfg.ENABLE_SECOND_OPINION", True):
+        signal = score_and_evaluate(market, news_context="news")
+
+    assert signal is not None
+    assert signal.agent_probability == pytest.approx(0.70)

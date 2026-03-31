@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -135,18 +136,28 @@ def fetch_price_history(market_id: str) -> dict[str, float] | None:
         response.raise_for_status()
         data: Any = response.json()
     except (requests.RequestException, ValueError) as exc:
-        logger.warning("price_history_fetch_failed", extra={"market_id": market_id, "error": str(exc)})
+        logger.warning(
+            "price_history_fetch_failed",
+            extra={"market_id": market_id, "error": str(exc)},
+        )
         return None
 
     if not isinstance(data, list) or len(data) < 2:
-        logger.warning("price_history_insufficient_data", extra={"market_id": market_id, "points": len(data) if isinstance(data, list) else 0})
+        points = len(data) if isinstance(data, list) else 0
+        logger.warning(
+            "price_history_insufficient_data",
+            extra={"market_id": market_id, "points": points},
+        )
         return None
 
     try:
         price_24h_ago = float(data[0].get("price", data[0].get("p", 0)))
         current_price = float(data[-1].get("price", data[-1].get("p", 0)))
     except (ValueError, TypeError, AttributeError) as exc:
-        logger.warning("price_history_parse_failed", extra={"market_id": market_id, "error": str(exc)})
+        logger.warning(
+            "price_history_parse_failed",
+            extra={"market_id": market_id, "error": str(exc)},
+        )
         return None
 
     result: dict[str, float] = {
@@ -155,7 +166,10 @@ def fetch_price_history(market_id: str) -> dict[str, float] | None:
         "momentum": current_price - price_24h_ago,
     }
     _cache_set(cache_key, result, cfg.CACHE_TTL_PRICES)
-    logger.info("price_history_fetched", extra={"market_id": market_id, "momentum": result["momentum"]})
+    logger.info(
+        "price_history_fetched",
+        extra={"market_id": market_id, "momentum": result["momentum"]},
+    )
     return result
 
 
@@ -281,13 +295,52 @@ def _parse_tags(raw: dict[str, Any]) -> list[str]:
     return slugs
 
 
-def _primary_category(tags: list[str]) -> str:
-    """Return the first focus-matching tag, else the first tag, else 'unknown'."""
+_CATEGORY_PATTERNS: dict[str, re.Pattern[str]] = {
+    "politics": re.compile(
+        r"election|president|vote|senate|congress|governor|mayor|parliament|"
+        r"democrat|republican|primary|caucus|ballot|impeach",
+        re.IGNORECASE,
+    ),
+    "science": re.compile(
+        r"FDA|clinical.trial|study|research|peer.review|vaccine|drug.approval|"
+        r"breakthrough|experiment|Nobel|laboratory",
+        re.IGNORECASE,
+    ),
+    "sports_outcome": re.compile(
+        r"win|championship|playoff|Super.Bowl|World.Cup|NBA|NFL|MLB|NHL|"
+        r"match|tournament|medal|Olympics|Grand.Slam|UFC",
+        re.IGNORECASE,
+    ),
+    "geopolitics": re.compile(
+        r"sanction|treaty|NATO|invasion|ceasefire|diplomat|summit|embargo|"
+        r"nuclear.deal|territorial|annexation|UN.resolution",
+        re.IGNORECASE,
+    ),
+}
+
+
+def _detect_category(question: str) -> str:
+    """Detect market category from question text via keyword patterns."""
+    for category, pattern in _CATEGORY_PATTERNS.items():
+        if pattern.search(question):
+            logger.debug(
+                "category_detected",
+                extra={"category": category, "question": question[:60]},
+            )
+            return category
+    return "default"
+
+
+def _primary_category(tags: list[str], question: str = "") -> str:
+    """Return the first focus-matching tag, keyword-detected category, or fallback."""
     focus: list[str] = list(cfg.MARKET_FILTERS["category_focus"])
     for tag in tags:
         if _tag_in_focus(tag, focus):
             return tag
-    return tags[0] if tags else "unknown"
+    detected = _detect_category(question)
+    if detected != "default":
+        return detected
+    return tags[0] if tags else "default"
 
 
 def _tag_in_focus(tag: str, focus: list[str]) -> bool:
@@ -364,7 +417,7 @@ def parse_market(raw: dict[str, Any]) -> MarketData | None:
         )
 
     tags = _parse_tags(raw)
-    category = _primary_category(tags)
+    category = _primary_category(tags, question)
 
     return MarketData(
         market_id=market_id,

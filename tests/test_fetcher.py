@@ -12,9 +12,11 @@ import pytest
 
 from core.fetcher import (
     MarketData,
+    _detect_category,
     _parse_prices,
     _parse_tags,
     _passes_filters,
+    _primary_category,
     _tag_in_focus,
     clear_cache,
     fetch_orderbook_depth,
@@ -491,6 +493,74 @@ def test_fetch_orderbook_depth_no_liquidity_within_2pct() -> None:
     assert result["bid_depth_2pct"] == pytest.approx(0.0)
     assert result["ask_depth_2pct"] == pytest.approx(0.0)
     assert result["total_liquidity"] == pytest.approx(0.0)
+
+
+# ── _detect_category ────────────────────────────────────────────────────────
+
+
+def test_detect_category_politics() -> None:
+    assert _detect_category("Will the president win the election?") == "politics"
+
+
+def test_detect_category_science() -> None:
+    assert _detect_category("Will the FDA approve this drug?") == "science"
+
+
+def test_detect_category_sports() -> None:
+    assert _detect_category("Will team X win the NBA championship?") == "sports_outcome"
+
+
+def test_detect_category_geopolitics() -> None:
+    assert _detect_category("Will NATO impose new sanctions?") == "geopolitics"
+
+
+def test_detect_category_default_fallback() -> None:
+    assert _detect_category("Will the weather be nice tomorrow?") == "default"
+
+
+def test_detect_category_case_insensitive() -> None:
+    assert _detect_category("ELECTION results for SENATE") == "politics"
+
+
+# ── _primary_category with keyword detection ────────────────────────────────
+
+
+def test_primary_category_tag_match_takes_precedence() -> None:
+    """Tags matching focus should win over keyword detection."""
+    result = _primary_category(["politics"], "Will someone win the NBA?")
+    assert result == "politics"
+
+
+def test_primary_category_keyword_fallback() -> None:
+    """No focus tag → falls back to keyword detection from question."""
+    result = _primary_category(["entertainment"], "Will the president be impeached?")
+    assert result == "politics"
+
+
+def test_primary_category_no_match_returns_first_tag() -> None:
+    """No focus tag, no keyword match → returns first tag."""
+    result = _primary_category(["entertainment"], "Will it rain tomorrow?")
+    assert result == "entertainment"
+
+
+def test_primary_category_empty_tags_no_keywords() -> None:
+    """Empty tags and no keyword match → returns 'default'."""
+    result = _primary_category([], "Will it rain tomorrow?")
+    assert result == "default"
+
+
+def test_parse_market_detects_category_from_question() -> None:
+    """parse_market should detect category via keywords when tags don't match focus."""
+    raw = _good_raw(
+        question="Will the FDA approve the new vaccine?",
+        tags=[{"slug": "health", "label": "Health"}],
+    )
+    market = parse_market(raw)
+    assert market is not None
+    assert market.category == "science"
+
+
+# ── get_tradeable_markets (regression) ──────────────────────────────────────
 
 
 def test_get_tradeable_markets_returns_filtered_list() -> None:
