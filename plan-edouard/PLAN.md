@@ -1,114 +1,148 @@
-# Plan Edouard — Sprint 1
+# Plan Edouard — Mis a jour 2026-04-01
 
-> **Pull depuis `Maitre-Chat`** pour avoir ce fichier a jour.
-> Kenny coche les taches quand tu confirmes qu'elles sont terminees.
+> **`git pull origin Maitre-Chat`** pour avoir ce fichier a jour.
+> Kenny coche tes taches quand tu confirmes qu'elles sont terminees.
 
 ---
 
-## Regles de territoire
+## Regles de territoire (STRICTES)
 
 | Zone | Edouard | Kenny |
 |------|---------|-------|
-| `core/` (scorer, fetcher, news, calibration) | **Proprietaire** | INTERDIT |
-| `tests/test_scorer.py`, `test_fetcher.py`, `test_news.py` | **Proprietaire** | INTERDIT |
-| `execution/`, `pipeline/`, `dashboard/` | INTERDIT | Proprietaire |
-| `infra/` (config, db, telegram) | INTERDIT | Proprietaire |
+| `core/` (scorer, fetcher, news, calibration) | **PROPRIETAIRE** | INTERDIT |
+| `tests/test_scorer.py`, `test_fetcher.py`, `test_news.py`, `test_calibration.py` | **PROPRIETAIRE** | INTERDIT |
+| `execution/` (sizing, clob, orders, portfolio) | **INTERDIT** | Proprietaire |
+| `pipeline/` (orchestrator, scheduler) | **INTERDIT** | Proprietaire |
+| `dashboard/` (api.py, app.jsx) | **INTERDIT** | Proprietaire |
+| `infra/` (config.py, db.py, telegram.py) | **INTERDIT** | Proprietaire |
+| `tests/` (tous les autres tests) | **INTERDIT** | Proprietaire |
 | `infra/types.py` | **PARTAGE** — PR + accord des deux | **PARTAGE** |
 
-**Import uniquement depuis `infra.types` et `infra.db`** — jamais depuis `execution/` ou `pipeline/`.
-
----
-
-## Tache 1 : `core/calibration.py` (scaffold)
-
-- [ ] Creer `core/calibration.py`
-- [ ] Implementer `apply_calibration_adjustment(raw_prob: float, buckets: list[CalibrationBucket]) -> float`
-  - Ajuste la probabilite brute du scorer selon les buckets de calibration existants
-  - Si aucun bucket n'a assez de data (`count < 5`), retourner `raw_prob` tel quel
-- [ ] Implementer `is_calibrated(buckets: list[CalibrationBucket], max_error: float = 0.08) -> bool`
-  - Retourne `True` si l'erreur moyenne de tous les buckets est < `max_error`
-  - Ignorer les buckets vides (`count == 0`)
-- [ ] Implementer `get_calibration_report() -> dict`
-  - Utilise `db.compute_calibration()` qui existe deja dans `infra/db.py`
-  - Retourne : `{"buckets": [...], "is_calibrated": bool, "mean_error": float, "total_signals": int}`
-- [ ] Imports autorises : `infra.types` (CalibrationBucket), `infra.db` (compute_calibration), `infra.config`
-- [ ] Creer `tests/test_calibration.py` avec couverture complete (min 10 tests)
-- [ ] Tous les tests passent : `pytest tests/test_calibration.py -v`
-
-### Signatures de reference
+### Imports autorises pour Edouard
 
 ```python
-# infra/types.py — CalibrationBucket (deja existant, NE PAS MODIFIER)
-@dataclass
-class CalibrationBucket:
-    bucket_low: float
-    bucket_high: float
-    predicted_prob: float   # mean agent_probability in this bucket
-    actual_win_rate: float  # actual wins / total in bucket
-    count: int
-    error: float            # |predicted_prob - actual_win_rate|
+# OK — tu peux importer
+from infra.types import TradingSignal, ScoringResult, EdgeResult, CalibrationBucket
+import infra.config as cfg
+import infra.db as db
 
-# infra/db.py — deja existant
-def compute_calibration(last_n: int = 100) -> list[CalibrationBucket]: ...
+# INTERDIT — ne jamais importer
+from execution import ...    # NON
+from pipeline import ...     # NON
+from dashboard import ...    # NON
 ```
 
----
+### Si tu as besoin d'une nouvelle constante dans `infra/config.py`
 
-## Tache 2 : Ameliorations `core/scorer.py`
-
-- [ ] **Prompts par categorie** — adapter le prompt Claude selon le type de marche :
-  - Politique, Science, Sport, Crypto, Autre
-  - Detecter la categorie depuis `question` ou ajouter un champ si necessaire
-- [ ] **Mode "second opinion"** — faire 2 appels Claude avec des prompts differents
-  - Si divergence > 0.15 entre les deux : flag `data_quality = "low"` + logger un warning
-  - Sinon : moyenne des deux probabilites
-- [ ] **Validation pydantic** des reponses JSON Claude
-  - Le scorer parse la reponse Claude — valider avec pydantic que le JSON est conforme
-  - Si validation echoue : retry 1 fois, puis `data_quality = "low"`
-- [ ] **Tracking latence + tokens** par appel
-  - Logger `duration_ms` et `tokens_used` (input + output) pour chaque appel Claude
-  - Format : `logger.info("scorer_call", extra={"duration_ms": ..., "tokens_input": ..., "tokens_output": ...})`
-- [ ] Mettre a jour `tests/test_scorer.py` pour couvrir les nouveaux cas
-- [ ] Tous les tests passent : `pytest tests/test_scorer.py -v`
+**Ne modifie PAS le fichier.** Dis a Kenny ce dont tu as besoin, il l'ajoute.
+Exemple : "J'ai besoin de `CACHE_TTL_MARKETS: int = 300` dans config.py" → Kenny l'ajoute et push.
 
 ---
 
-## Tache 3 : Ameliorations `core/fetcher.py`
+## Ce que Kenny fait en parallele (NE PAS TOUCHER)
 
-- [ ] **Prix historique 24h (momentum)**
-  - Ajouter une fonction ou enrichir les donnees marche avec le prix il y a 24h
-  - Calculer `momentum_24h = current_price - price_24h_ago`
-  - Si l'API Gamma ne fournit pas l'historique, documenter la limitation
-- [ ] **Profondeur du carnet d'ordres (liquidite)**
-  - Recup la profondeur bid/ask du CLOB pour chaque marche
-  - Ajouter `liquidity_score` ou equivalent aux donnees retournees
-  - Marches avec spread > 10% = flag low liquidity
-- [ ] **Cache avec TTL**
-  - Eviter les appels redondants a l'API Gamma
-  - TTL = `cfg.CYCLE_INTERVAL_SECONDS` (15 min par defaut)
-  - Utiliser un dict en memoire avec timestamp, pas de dep externe
-- [ ] Mettre a jour `tests/test_fetcher.py` pour couvrir les nouveaux cas
-- [ ] Tous les tests passent : `pytest tests/test_fetcher.py -v`
+Pour que tu saches ce qui se passe de son cote et eviter les conflits :
+
+| Module | Ce que Kenny construit | Fichiers |
+|--------|----------------------|----------|
+| **execution/** | Sizing Kelly, CLOB orders, fill tracking, portfolio | `sizing.py`, `clob.py`, `orders.py`, `portfolio.py` |
+| **pipeline/** | Orchestrator (paper + live), scheduler APScheduler | `orchestrator.py`, `scheduler.py` |
+| **dashboard/** | FastAPI backend + React frontend | `api.py`, `app.jsx` |
+| **infra/** | DB SQLite, Telegram alerts, config centralisee | `db.py`, `telegram.py`, `config.py` |
+| **tests/** | Tests execution, pipeline, dashboard, db, telegram, scheduler, api | `test_db.py`, `test_telegram.py`, `test_scheduler.py`, `test_api.py` |
+
+**Important :** Kenny gere le cablage entre `core/` et `execution/` dans `pipeline/orchestrator.py`.
+Ton code dans `core/` expose des fonctions — Kenny les appelle depuis l'orchestrator.
+Tu n'as **jamais** besoin de toucher a l'orchestrator.
 
 ---
 
-## Contraintes techniques
+## Sprint 1 — TERMINE
+
+- [x] **Tache 1 : `core/calibration.py`** — scaffold avec 3 fonctions
+  - `apply_calibration_adjustment()`, `is_calibrated()`, `get_calibration_report()`
+  - 90 lignes, 194 lignes de tests (test_calibration.py)
+- [x] **Tache 2 : Ameliorations `core/scorer.py`**
+  - Prompts par categorie (politics, science, sports, geopolitics)
+  - Mode second opinion avec detection divergence > 0.15
+  - Validation pydantic (ScorerResponse model)
+  - Tracking latence + tokens par appel
+  - 250 lignes de tests
+- [x] **Tache 3 : Ameliorations `core/fetcher.py`**
+  - `fetch_price_history()` — momentum 24h
+  - `fetch_orderbook_depth()` — liquidite bid/ask dans +/-2% du mid
+  - Cache TTL en memoire (`_cache_get`, `_cache_set`, `clear_cache`)
+  - 229 lignes de tests
+
+### Note sur le Sprint 1
+
+Tu as aussi modifie `pipeline/orchestrator.py` et `infra/config.py` dans ton commit `6ab616f`.
+**Ces fichiers sont dans le territoire de Kenny.** Pour le futur :
+- Si tu as besoin que l'orchestrator appelle une nouvelle fonction de `core/` → dis-le a Kenny
+- Si tu as besoin d'une constante dans `config.py` → dis-le a Kenny
+Kenny integre de son cote. Ca evite les conflits de merge.
+
+---
+
+## Sprint 2 — A FAIRE
+
+### Tache 4 : Integrer calibration dans le scoring pipeline
+
+- [ ] Dans `core/scorer.py` > `score_and_evaluate()` : apres le score, appeler `apply_calibration_adjustment()` sur la probabilite
+  - Seulement si `is_calibrated()` retourne `True`
+  - Logger l'ajustement : `logger.info("calibration_applied", extra={"raw": ..., "adjusted": ...})`
+  - Si pas calibre : utiliser la probabilite brute, logger `"calibration_skipped_not_ready"`
+- [ ] Mettre a jour les tests dans `tests/test_scorer.py`
+- [ ] `pytest tests/test_scorer.py tests/test_calibration.py -v` — tout vert
+
+### Tache 5 : Champ `category` dans MarketData
+
+- [ ] Ajouter un champ `category: str = "default"` dans `core/fetcher.py` > `MarketData`
+  - Les prompts par categorie dans scorer.py utilisent `getattr(market, "category", "default")` — ce champ le rend explicite
+- [ ] Implementer `_detect_category(question: str) -> str` dans `core/fetcher.py`
+  - Detection simple par mots-cles : "election|president|vote" → "politics", "FDA|trial|study" → "science", etc.
+  - Fallback : `"default"`
+- [ ] Appeler `_detect_category()` dans `parse_market()` pour remplir le champ
+- [ ] Mettre a jour `tests/test_fetcher.py`
+- [ ] `pytest tests/test_fetcher.py -v` — tout vert
+
+### Tache 6 : Second opinion — moyenner les probabilites
+
+- [ ] Dans `score_and_evaluate()` : quand `cfg.ENABLE_SECOND_OPINION` est True ET que `get_second_opinion()` retourne un resultat :
+  - Si divergence <= 0.15 : `final_prob = (first.probability + second.probability) / 2`
+  - Si divergence > 0.15 : garder `first.probability` mais set `data_quality = "low"`
+  - Reconstruire le `ScoringResult` avec la probabilite finale
+- [ ] Logger la decision : `logger.info("second_opinion_merged", extra={...})` ou `"second_opinion_diverged"`
+- [ ] Mettre a jour `tests/test_scorer.py`
+- [ ] `pytest tests/test_scorer.py -v` — tout vert
+
+---
+
+## Contraintes techniques (rappel)
 
 - **Zero magic number** — tout depuis `infra.config`
 - **Structured logging** — `logger.info("event", extra={...})`, jamais `print()`
-- **Mock toutes les APIs** dans les tests — Anthropic, Gamma, tout
-- **Ne pas modifier** `infra/types.py` sans PR + accord de Kenny
-- **Ne pas toucher** a `execution/`, `pipeline/`, `dashboard/`, `infra/`
+- **Mock toutes les APIs** dans les tests — Anthropic, Gamma, Perplexity, tout
+- **NE PAS modifier** `infra/types.py` sans PR + accord de Kenny
+- **NE PAS toucher** a `execution/`, `pipeline/`, `dashboard/`, `infra/`
 - **Type hints** partout, compatible `mypy --strict`
+- **Si tu as besoin d'un changement dans un fichier de Kenny** → demande-lui, il push
 
 ---
 
 ## Commandes de verification
 
 ```bash
-pytest tests/test_calibration.py -v    # Tache 1
-pytest tests/test_scorer.py -v         # Tache 2
-pytest tests/test_fetcher.py -v        # Tache 3
-mypy core/ --strict                    # Type check
-ruff check core/                       # Lint
+# Tests
+pytest tests/test_calibration.py -v
+pytest tests/test_scorer.py -v
+pytest tests/test_fetcher.py -v
+pytest tests/test_news.py -v
+
+# Quality
+mypy core/ --strict
+ruff check core/
+
+# Tout d'un coup
+pytest tests/test_calibration.py tests/test_scorer.py tests/test_fetcher.py tests/test_news.py -v && mypy core/ --strict && ruff check core/
 ```
