@@ -15,7 +15,7 @@ from typing import Any
 import infra.config as cfg
 import infra.db as db
 import infra.telegram as tg
-from core.fetcher import get_tradeable_markets
+from core.fetcher import filter_already_traded, get_tradeable_markets
 from core.news import build_news_context
 from core.scorer import score_and_evaluate
 from infra.types import TradingSignal
@@ -48,6 +48,21 @@ def run_single_cycle(paper: bool = True) -> dict[str, Any]:
 
     # Step 1: Fetch tradeable markets
     markets = get_tradeable_markets()
+
+    # Step 1.5: Remove markets already in open positions
+    dedup_conn = sqlite3.connect(cfg.DB_PATH)
+    try:
+        before_dedup = len(markets)
+        markets = filter_already_traded(markets, dedup_conn)
+        skipped_dedup = before_dedup - len(markets)
+        if skipped_dedup:
+            logger.info(
+                "dedup_filter_applied",
+                extra={"before": before_dedup, "after": len(markets), "skipped": skipped_dedup},
+            )
+    finally:
+        dedup_conn.close()
+
     total_markets = len(markets)
 
     if total_markets == 0:
@@ -118,11 +133,38 @@ def run_single_cycle(paper: bool = True) -> dict[str, Any]:
             clob_client = init_clob_client()
             bankroll = get_wallet_balance(clob_client)
 
+        # Paper bankroll: read once before the loop
+        if paper:
+            paper_bankroll = db.get_paper_bankroll()
+
         for signal in selected:
             if paper:
-                db.log_trade(signal, size_usdc=0.0, entry_price=signal.market_probability)
+                size = db.paper_kelly_size(
+                    bankroll=paper_bankroll,
+                    edge=signal.edge_net,
+                    market_price=signal.market_probability,
+                    fraction=cfg.KELLY_FRACTION,
+                    max_pct=0.10,
+                )
+                if size < cfg.MIN_TRADE_SIZE:
+                    logger.info("paper_size_below_min", extra={
+                        "market_id": signal.market_id, "size": size,
+                        "bankroll": paper_bankroll,
+                    })
+                    continue
+                size_shares = round(size / signal.market_probability, 2)
+                trade_id = db.log_trade(
+                    signal,
+                    size_usdc=size,
+                    entry_price=signal.market_probability,
+                    size_shares=size_shares,
+                )
+                # Deduct from paper bankroll for this cycle
+                paper_bankroll -= size
+                db.update_paper_bankroll(trade_id=trade_id, pnl_delta=-size, new_bankroll=paper_bankroll)
+
                 formatted = tg.format_trade_alert(
-                    signal, size_usdc=0.0, entry_price=signal.market_probability,
+                    signal, size_usdc=size, entry_price=signal.market_probability,
                 )
                 alert_msg = f"[PAPER] {formatted}"
                 tg.send_alert(alert_msg)

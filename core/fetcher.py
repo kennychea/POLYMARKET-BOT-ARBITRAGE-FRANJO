@@ -12,6 +12,8 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
+import sqlite3
+
 import requests
 
 import infra.config as cfg
@@ -498,6 +500,31 @@ def filter_markets(raw_markets: list[dict[str, Any]]) -> list[MarketData]:
         },
     )
     return results
+
+
+def get_open_market_ids(db_conn: sqlite3.Connection) -> set[str]:
+    """Return set of market_ids that have at least one open trade."""
+    rows = db_conn.execute(
+        "SELECT DISTINCT market_id FROM trades WHERE status = 'open'"
+    ).fetchall()
+    return {row[0] for row in rows}
+
+
+def filter_already_traded(
+    markets: list[MarketData], db_conn: sqlite3.Connection
+) -> list[MarketData]:
+    """Remove markets that already have an open position in the DB."""
+    open_ids = get_open_market_ids(db_conn)
+    if not open_ids:
+        return markets
+    filtered = [m for m in markets if m.market_id not in open_ids]
+    skipped = len(markets) - len(filtered)
+    if skipped:
+        logger.info(
+            "skipped_already_traded",
+            extra={"skipped": skipped, "open_positions": len(open_ids)},
+        )
+    return filtered
 
 
 def get_tradeable_markets() -> list[MarketData]:

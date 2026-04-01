@@ -2,11 +2,14 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from typing import Any
 
 from dotenv import load_dotenv
 
-load_dotenv()
+# Always load the .env that lives next to this project, regardless of cwd.
+_ENV_PATH = Path(__file__).resolve().parent.parent / ".env"
+load_dotenv(_ENV_PATH, override=True)
 
 
 def _require(key: str) -> str:
@@ -38,6 +41,7 @@ CYCLE_INTERVAL_SECONDS: int = 900       # 15 min
 MIN_TRADE_SIZE: float = 5.0             # USDC minimum
 POLYMARKET_FEE: float = 0.02            # 2% on gains
 INITIAL_BANKROLL_USDC: float = 100.0    # manual update until wallet balance API
+PAPER_INITIAL_BANKROLL: float = 500.0   # fictive bankroll for paper trading P&L
 ENABLE_SECOND_OPINION: bool = False     # scorer double-check (prompt 3)
 
 # ── Cache TTLs ───────────────────────────────────────────────────────────────

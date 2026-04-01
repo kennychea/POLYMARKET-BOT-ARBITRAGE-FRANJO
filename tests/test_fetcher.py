@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+import sqlite3
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -23,7 +24,9 @@ from core.fetcher import (
     clear_cache,
     fetch_orderbook_depth,
     fetch_price_history,
+    filter_already_traded,
     filter_markets,
+    get_open_market_ids,
     parse_market,
 )
 
@@ -654,3 +657,97 @@ def test_filter_rejection_logging(caplog: pytest.LogCaptureFixture) -> None:
     assert extra["tradeable"] == 1
     assert extra["skipped_parse"] == 1
     assert extra["rejected_volume"] == 2
+
+
+# ── get_open_market_ids / filter_already_traded ────────────────────────────
+
+
+def _make_trade_db(trades: list[tuple[str, str, str]]) -> sqlite3.Connection:
+    """Create an in-memory DB with trades table and given (market_id, side, status) rows."""
+    conn = sqlite3.connect(":memory:")
+    conn.execute(
+        """
+        CREATE TABLE trades (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT NOT NULL,
+            market_id TEXT NOT NULL,
+            question TEXT NOT NULL,
+            side TEXT NOT NULL,
+            size_usdc REAL NOT NULL,
+            entry_price REAL NOT NULL,
+            agent_probability REAL NOT NULL,
+            market_probability REAL NOT NULL,
+            edge_net REAL NOT NULL,
+            confidence INTEGER NOT NULL,
+            order_id TEXT NOT NULL DEFAULT '',
+            size_shares REAL NOT NULL DEFAULT 0.0,
+            status TEXT NOT NULL DEFAULT 'open',
+            exit_price REAL,
+            pnl REAL,
+            resolution_date TEXT
+        )
+        """
+    )
+    for market_id, side, status in trades:
+        conn.execute(
+            """
+            INSERT INTO trades (timestamp, market_id, question, side, size_usdc,
+                                entry_price, agent_probability, market_probability,
+                                edge_net, confidence, status)
+            VALUES ('2026-03-31T00:00:00', ?, 'Q?', ?, 0.0, 0.5, 0.5, 0.5, 0.05, 7, ?)
+            """,
+            (market_id, side, status),
+        )
+    conn.commit()
+    return conn
+
+
+def test_get_open_market_ids_returns_set() -> None:
+    conn = _make_trade_db([
+        ("0xA", "YES", "open"),
+        ("0xB", "NO", "open"),
+        ("0xC", "YES", "open"),
+    ])
+    result = get_open_market_ids(conn)
+    assert result == {"0xA", "0xB", "0xC"}
+    conn.close()
+
+
+def test_get_open_market_ids_empty_db() -> None:
+    conn = _make_trade_db([])
+    result = get_open_market_ids(conn)
+    assert result == set()
+    conn.close()
+
+
+def test_filter_already_traded_removes_open() -> None:
+    conn = _make_trade_db([
+        ("0xA", "YES", "open"),
+        ("0xB", "NO", "open"),
+    ])
+    markets = [
+        _make_market(market_id="0xA"),
+        _make_market(market_id="0xB"),
+        _make_market(market_id="0xC"),
+        _make_market(market_id="0xD"),
+        _make_market(market_id="0xE"),
+    ]
+    result = filter_already_traded(markets, conn)
+    assert len(result) == 3
+    assert {m.market_id for m in result} == {"0xC", "0xD", "0xE"}
+    conn.close()
+
+
+def test_filter_already_traded_keeps_resolved() -> None:
+    """Markets with won/lost status can be re-traded."""
+    conn = _make_trade_db([
+        ("0xA", "YES", "won"),
+        ("0xB", "NO", "lost"),
+    ])
+    markets = [
+        _make_market(market_id="0xA"),
+        _make_market(market_id="0xB"),
+    ]
+    result = filter_already_traded(markets, conn)
+    assert len(result) == 2
+    conn.close()

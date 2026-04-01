@@ -14,6 +14,32 @@ from infra.types import OrderResult, TradingSignal
 from pipeline.orchestrator import run_single_cycle
 
 
+@pytest.fixture(autouse=True)
+def _mock_dedup():
+    """Mock filter_already_traded as passthrough for all orchestrator tests.
+
+    Also patches sqlite3.connect for the dedup connection (paper mode tests
+    don't mock sqlite3.connect, and we don't want to hit the real DB).
+    Note: live mode tests override sqlite3.connect with their own mock.
+    """
+    with patch(
+        "pipeline.orchestrator.filter_already_traded",
+        side_effect=lambda markets, conn: markets,
+    ):
+        yield
+
+
+@pytest.fixture(autouse=True)
+def _mock_paper_bankroll():
+    """Auto-mock paper bankroll helpers so paper-mode tests don't hit real DB."""
+    with (
+        patch(_PATCHES["db_get_bankroll"], return_value=500.0),
+        patch(_PATCHES["db_kelly"], return_value=10.0),
+        patch(_PATCHES["db_update_bankroll"]),
+    ):
+        yield
+
+
 # ── Fixtures ─────────────────────────────────────────────────────────────────
 
 
@@ -59,10 +85,14 @@ def _make_signal(
 # Shared patch targets
 _PATCHES = {
     "fetcher": "pipeline.orchestrator.get_tradeable_markets",
+    "dedup": "pipeline.orchestrator.filter_already_traded",
     "news": "pipeline.orchestrator.build_news_context",
     "scorer": "pipeline.orchestrator.score_and_evaluate",
     "db_log_trade": "pipeline.orchestrator.db.log_trade",
     "db_log_scan": "pipeline.orchestrator.db.log_scan",
+    "db_get_bankroll": "pipeline.orchestrator.db.get_paper_bankroll",
+    "db_kelly": "pipeline.orchestrator.db.paper_kelly_size",
+    "db_update_bankroll": "pipeline.orchestrator.db.update_paper_bankroll",
     "tg_send": "pipeline.orchestrator.tg.send_alert",
     "tg_trade_fmt": "pipeline.orchestrator.tg.format_trade_alert",
     "tg_scan_fmt": "pipeline.orchestrator.tg.format_scan_alert",
@@ -141,7 +171,13 @@ def test_paper_mode_logs_to_db(
 
     run_single_cycle(paper=True)
 
-    mock_db_trade.assert_called_once_with(signal, size_usdc=0.0, entry_price=signal.market_probability)
+    # Paper mode now uses kelly sizing (mocked at 10.0) with shares
+    mock_db_trade.assert_called_once_with(
+        signal,
+        size_usdc=10.0,
+        entry_price=signal.market_probability,
+        size_shares=round(10.0 / signal.market_probability, 2),
+    )
 
 
 @patch(_PATCHES["sleep"])
@@ -554,8 +590,8 @@ def test_live_mode_conn_closed_in_finally(
 
     run_single_cycle(paper=False)
 
-    # close() called twice: once in main finally, once in resolution finally
-    assert mock_conn.close.call_count == 2
+    # close() called 3 times: dedup conn, main finally, resolution finally
+    assert mock_conn.close.call_count == 3
 
 
 @patch(_LIVE_PATCHES["exec_available"], True)
@@ -593,7 +629,8 @@ def test_live_mode_clob_init_failure_closes_conn(
     with pytest.raises(Exception, match="CLOB connection failed"):
         run_single_cycle(paper=False)
 
-    mock_conn.close.assert_called_once()
+    # close() called twice: dedup conn + main finally
+    assert mock_conn.close.call_count == 2
 
 
 @patch(_LIVE_PATCHES["exec_available"], False)
@@ -881,3 +918,104 @@ def test_paper_mode_no_cancel_stale_orders(
     run_single_cycle(paper=True)
 
     mock_cancel_stale.assert_not_called()
+
+
+# ── Paper bankroll tests ───────────────────────────────────────────────────
+
+
+@patch(_PATCHES["sleep"])
+@patch(_PATCHES["tg_scan_fmt"], return_value="scan")
+@patch(_PATCHES["tg_trade_fmt"], return_value="alert")
+@patch(_PATCHES["tg_send"])
+@patch(_PATCHES["db_log_scan"])
+@patch(_PATCHES["db_log_trade"], return_value=42)
+@patch(_PATCHES["scorer"])
+@patch(_PATCHES["news"], return_value="news")
+@patch(_PATCHES["fetcher"])
+def test_paper_mode_kelly_sizing(
+    mock_fetcher: MagicMock,
+    mock_news: MagicMock,
+    mock_scorer: MagicMock,
+    mock_db_trade: MagicMock,
+    mock_db_scan: MagicMock,
+    mock_tg_send: MagicMock,
+    mock_tg_trade: MagicMock,
+    mock_tg_scan: MagicMock,
+    mock_sleep: MagicMock,
+) -> None:
+    """Paper mode: uses kelly sizing from paper bankroll instead of 0.0."""
+    mock_fetcher.return_value = [_make_market()]
+    signal = _make_signal(market_probability=0.50, edge_net=0.10)
+    mock_scorer.return_value = signal
+
+    result = run_single_cycle(paper=True)
+
+    assert result["signals_sent"] == 1
+    # log_trade called with kelly-sized amount (mocked at 10.0)
+    mock_db_trade.assert_called_once()
+    call_kwargs = mock_db_trade.call_args
+    assert call_kwargs[1]["size_usdc"] == 10.0
+    assert call_kwargs[1]["size_shares"] == round(10.0 / 0.50, 2)
+
+
+@patch(_PATCHES["sleep"])
+@patch(_PATCHES["tg_scan_fmt"], return_value="scan")
+@patch(_PATCHES["tg_trade_fmt"], return_value="alert")
+@patch(_PATCHES["tg_send"])
+@patch(_PATCHES["db_log_scan"])
+@patch(_PATCHES["db_log_trade"], return_value=1)
+@patch(_PATCHES["scorer"])
+@patch(_PATCHES["news"], return_value="news")
+@patch(_PATCHES["fetcher"])
+def test_paper_mode_updates_bankroll(
+    mock_fetcher: MagicMock,
+    mock_news: MagicMock,
+    mock_scorer: MagicMock,
+    mock_db_trade: MagicMock,
+    mock_db_scan: MagicMock,
+    mock_tg_send: MagicMock,
+    mock_tg_trade: MagicMock,
+    mock_tg_scan: MagicMock,
+    mock_sleep: MagicMock,
+) -> None:
+    """Paper mode: bankroll is updated after each trade."""
+    mock_fetcher.return_value = [_make_market()]
+    mock_scorer.return_value = _make_signal()
+
+    with patch(_PATCHES["db_update_bankroll"]) as mock_update:
+        run_single_cycle(paper=True)
+
+        mock_update.assert_called_once()
+        call_kwargs = mock_update.call_args
+        assert call_kwargs[1]["trade_id"] == 1
+        assert call_kwargs[1]["pnl_delta"] == -10.0  # deducted from bankroll
+        assert call_kwargs[1]["new_bankroll"] == 490.0  # 500 - 10
+
+
+@patch(_PATCHES["sleep"])
+@patch(_PATCHES["tg_scan_fmt"], return_value="scan")
+@patch(_PATCHES["tg_send"])
+@patch(_PATCHES["db_log_scan"])
+@patch(_PATCHES["db_log_trade"], return_value=1)
+@patch(_PATCHES["scorer"])
+@patch(_PATCHES["news"], return_value="news")
+@patch(_PATCHES["fetcher"])
+def test_paper_mode_skip_below_min_trade_size(
+    mock_fetcher: MagicMock,
+    mock_news: MagicMock,
+    mock_scorer: MagicMock,
+    mock_db_trade: MagicMock,
+    mock_db_scan: MagicMock,
+    mock_tg_send: MagicMock,
+    mock_tg_scan: MagicMock,
+    mock_sleep: MagicMock,
+) -> None:
+    """Paper mode: kelly size below MIN_TRADE_SIZE → skip trade."""
+    mock_fetcher.return_value = [_make_market()]
+    mock_scorer.return_value = _make_signal()
+
+    with patch(_PATCHES["db_kelly"], return_value=2.0):  # below MIN_TRADE_SIZE=5.0
+        result = run_single_cycle(paper=True)
+
+    assert result["signals_sent"] == 0
+    mock_db_trade.assert_not_called()

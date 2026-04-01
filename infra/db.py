@@ -45,6 +45,15 @@ CREATE TABLE IF NOT EXISTS market_scans (
     opportunities_found INTEGER NOT NULL,
     trades_placed       INTEGER NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS paper_bankroll (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp           TEXT    NOT NULL,
+    bankroll            REAL    NOT NULL,
+    trade_id            INTEGER,
+    pnl_delta           REAL    NOT NULL DEFAULT 0.0,
+    FOREIGN KEY (trade_id) REFERENCES trades(id)
+);
 """
 
 
@@ -244,3 +253,78 @@ def compute_calibration(last_n: int = 100) -> list[CalibrationBucket]:
         extra={"last_n": last_n, "buckets_with_data": len(results)},
     )
     return results
+
+
+# ── Paper bankroll ──────────────────────────────────────────────────────────
+
+
+def get_paper_bankroll() -> float:
+    """Return the latest paper bankroll, or PAPER_INITIAL_BANKROLL if none exists."""
+    with _conn() as con:
+        row = con.execute(
+            "SELECT bankroll FROM paper_bankroll ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+    if row is None:
+        return cfg.PAPER_INITIAL_BANKROLL
+    return float(row["bankroll"])
+
+
+def update_paper_bankroll(
+    trade_id: int | None,
+    pnl_delta: float,
+    new_bankroll: float,
+) -> None:
+    """Record a bankroll change after a paper trade or resolution."""
+    from datetime import datetime
+
+    with _conn() as con:
+        con.execute(
+            """
+            INSERT INTO paper_bankroll (timestamp, bankroll, trade_id, pnl_delta)
+            VALUES (?, ?, ?, ?)
+            """,
+            (datetime.now(UTC).isoformat(), new_bankroll, trade_id, pnl_delta),
+        )
+    logger.info(
+        "paper_bankroll_updated",
+        extra={"trade_id": trade_id, "pnl_delta": pnl_delta, "bankroll": new_bankroll},
+    )
+
+
+def get_paper_bankroll_history() -> list[dict[str, Any]]:
+    """Return full paper bankroll history, newest first."""
+    with _conn() as con:
+        rows = con.execute(
+            "SELECT * FROM paper_bankroll ORDER BY id DESC"
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def paper_kelly_size(
+    bankroll: float,
+    edge: float,
+    market_price: float,
+    fraction: float = 0.25,
+    max_pct: float = 0.10,
+) -> float:
+    """Quarter-Kelly sizing for paper trades. No execution/ dependency.
+
+    Returns 0.0 for invalid inputs. Caps at max_pct * bankroll.
+    Enforces MIN_TRADE_SIZE floor.
+    """
+    if edge <= 0 or market_price <= 0 or market_price >= 1 or bankroll <= 0:
+        return 0.0
+
+    b = (1 / market_price) - 1          # implied odds
+    p = market_price + edge             # estimated true prob
+    q = 1 - p
+
+    kelly_raw = (b * p - q) / b
+    if kelly_raw <= 0:
+        return 0.0
+
+    size = bankroll * kelly_raw * fraction
+    size = min(size, bankroll * max_pct)
+    size = round(size, 2)
+
+    return max(size, cfg.MIN_TRADE_SIZE) if size >= cfg.MIN_TRADE_SIZE else 0.0
